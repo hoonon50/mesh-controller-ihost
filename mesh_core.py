@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import threading
 import time
 import zipfile
@@ -251,7 +252,9 @@ class MeshController:
             client = None
             try:
                 client = self.ssh_client(ip, 5)
-                cmd = r'''printf 'HOST='; hostname 2>/dev/null || true
+                cmd = r'''host_value="$(uci -q get system.@system[0].hostname 2>/dev/null || true)"
+[ -n "$host_value" ] || host_value="$(cat /proc/sys/kernel/hostname 2>/dev/null || true)"
+printf 'HOST=%s\n' "$host_value"
 printf 'UP='; cut -d. -f1 /proc/uptime 2>/dev/null || true
 printf 'MACS='; for f in /sys/class/net/*/address; do cat "$f" 2>/dev/null; done | tr '\n' ' '; echo
 printf 'WIRELESS_BEGIN\n'; ubus call network.wireless status 2>/dev/null || true; printf '\nWIRELESS_END\n'
@@ -277,6 +280,9 @@ done; printf 'PORTS_END\n'
                 up = re.search(r"^UP=(.*)$", out, re.M)
                 macs = re.search(r"^MACS=(.*)$", out, re.M)
                 state.hostname = host.group(1).strip() if host else ""
+                # Ochrana proti slepenému výstupu starších BusyBoxů: hodnota UP=... nikdy není hostname.
+                if state.hostname.upper().startswith("UP=") or state.hostname in {"", "localhost", "(none)"}:
+                    state.hostname = ""
                 # Zobrazený název se vždy řídí skutečným hostname routeru.
                 # Konfigurační name zůstává pouze jako fallback pro offline uzel.
                 if state.hostname:
@@ -816,40 +822,59 @@ echo LED_OK
             result.append({"id": d.name, "created": created, "count": len(files), "files": files})
         return result
 
-    def backup_file(self, set_id: str, filename: str) -> Optional[Path]:
-        if not re.fullmatch(r"[0-9_-]+", set_id):
+    def _backup_set_dir(self, set_id: str) -> Optional[Path]:
+        # Starší verze používaly i názvy jako "BACKUP 2026-...".
+        # Povolíme libovolný přímý název pod /data/backups, ale nikdy cestu ven z adresáře.
+        if not set_id or set_id in {".", ".."} or Path(set_id).name != set_id:
             return None
+        d = (BACKUP_DIR / set_id).resolve()
+        if d.parent != BACKUP_DIR.resolve():
+            return None
+        return d
+
+    def backup_file(self, set_id: str, filename: str) -> Optional[Path]:
         if filename not in {r.get("backup_name") for r in self.routers}:
             return None
-        p = (BACKUP_DIR / set_id / filename).resolve()
-        base = (BACKUP_DIR / set_id).resolve()
+        base = self._backup_set_dir(set_id)
+        if not base:
+            return None
+        p = (base / filename).resolve()
         if base not in p.parents or not p.is_file():
             return None
         return p
 
     def build_backup_zip(self, set_id: str) -> Optional[Path]:
-        if not re.fullmatch(r"[0-9_-]+", set_id):
+        d = self._backup_set_dir(set_id)
+        if not d or not d.is_dir():
             return None
-        d = (BACKUP_DIR / set_id).resolve()
-        if not d.is_dir() or BACKUP_DIR.resolve() not in d.parents:
-            return None
-        zip_path = DATA_DIR / f"BACKUP_{set_id}.zip"
+        safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", set_id).strip("_") or "backup"
+        zip_path = DATA_DIR / f"BACKUP_{safe_id}.zip"
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
-            for f in sorted(d.iterdir()):
+            for f in sorted(d.rglob("*")):
                 if f.is_file():
-                    z.write(f, arcname=f.name)
+                    z.write(f, arcname=str(f.relative_to(d)))
         return zip_path
 
     def delete_backup(self, set_id: str) -> bool:
-        if not re.fullmatch(r"[0-9_-]+", set_id):
+        d = self._backup_set_dir(set_id)
+        if not d or not d.exists():
             return False
-        d = (BACKUP_DIR / set_id).resolve()
-        if not d.is_dir() or BACKUP_DIR.resolve() not in d.parents:
+        try:
+            # Staré sady mohly obsahovat podadresáře; proto je odstranění rekurzivní.
+            if d.is_dir():
+                shutil.rmtree(d)
+            else:
+                d.unlink()
+            # Odstraň i případný dříve vytvořený ZIP této sady.
+            safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", set_id).strip("_") or "backup"
+            for z in {DATA_DIR / f"BACKUP_{set_id}.zip", DATA_DIR / f"BACKUP_{safe_id}.zip"}:
+                try:
+                    if z.is_file(): z.unlink()
+                except Exception:
+                    pass
+            return True
+        except Exception:
             return False
-        for p in d.iterdir():
-            if p.is_file(): p.unlink()
-        d.rmdir()
-        return True
 
 
 controller = MeshController()

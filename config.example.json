@@ -1,33 +1,16 @@
 {
   "routers": [
-    {
-      "ip": "192.168.30.1",
-      "name": "Hlavní Node (.1)"
-    },
-    {
-      "ip": "192.168.30.2",
-      "name": "Uzel 2 (.2)"
-    },
-    {
-      "ip": "192.168.30.3",
-      "name": "Uzel 3 (.3)"
-    },
-    {
-      "ip": "192.168.30.4",
-      "name": "Uzel 4 (.4)"
-    },
-    {
-      "ip": "192.168.30.5",
-      "name": "Uzel 5 (.5)"
-    }
+    {"ip": "192.168.30.1", "name": "ROUTER", "backup_name": "ROUTER.tar.gz"},
+    {"ip": "192.168.30.2", "name": "MESH1", "backup_name": "MESH1.tar.gz"},
+    {"ip": "192.168.30.3", "name": "MESH2", "backup_name": "MESH2.tar.gz"},
+    {"ip": "192.168.30.4", "name": "MESH3", "backup_name": "MESH3.tar.gz"},
+    {"ip": "192.168.30.5", "name": "MESH4", "backup_name": "MESH4.tar.gz"}
   ],
-  "main_node": "192.168.30.1",
-  "ssh_user": "root",
-  "ssh_password": "root",
-  "ssh_key_file": "",
-  "ssh_timeout": 4,
-  "command_timeout": 15,
-  "lan_network": "192.168.30.0/24",
-  "lan_bridge": "br-lan",
+  "ssh": {
+    "user": "root",
+    "password": "root",
+    "key_file": "",
+    "timeout": 5
+  },
   "refresh_seconds": 30
 }

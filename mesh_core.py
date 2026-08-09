@@ -1,936 +1,452 @@
 from __future__ import annotations
 
-import csv
-import ipaddress
 import json
 import os
 import re
 import shlex
-import subprocess
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+import zipfile
+from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import paramiko
 
-DATA_DIR = Path(os.getenv("MESH_DATA_DIR", "/data"))
-CONFIG_FILE = DATA_DIR / "config.json"
-UPLINK_FILE = DATA_DIR / "mesh_uplink_ports.json"
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 BACKUP_DIR = DATA_DIR / "backups"
-LOG_FILE = DATA_DIR / "mesh-controller.log"
+CONFIG_FILE = DATA_DIR / "config.json"
+EXAMPLE_CONFIG = Path(__file__).with_name("config.example.json")
 
-DEFAULT_CONFIG: Dict[str, Any] = {
+DEFAULT_CONFIG = {
     "routers": [
-        {"ip": "192.168.30.1", "name": "Hlavní Node (.1)"},
-        {"ip": "192.168.30.2", "name": "Uzel 2 (.2)"},
-        {"ip": "192.168.30.3", "name": "Uzel 3 (.3)"},
-        {"ip": "192.168.30.4", "name": "Uzel 4 (.4)"},
-        {"ip": "192.168.30.5", "name": "Uzel 5 (.5)"},
+        {"ip": "192.168.30.1", "name": "ROUTER", "backup_name": "ROUTER.tar.gz"},
+        {"ip": "192.168.30.2", "name": "MESH1", "backup_name": "MESH1.tar.gz"},
+        {"ip": "192.168.30.3", "name": "MESH2", "backup_name": "MESH2.tar.gz"},
+        {"ip": "192.168.30.4", "name": "MESH3", "backup_name": "MESH3.tar.gz"},
+        {"ip": "192.168.30.5", "name": "MESH4", "backup_name": "MESH4.tar.gz"},
     ],
-    "main_node": "192.168.30.1",
-    "ssh_user": "root",
-    "ssh_password": "root",
-    "ssh_key_file": "",
-    "ssh_timeout": 4,
-    "command_timeout": 15,
-    "lan_network": "192.168.30.0/24",
-    "lan_bridge": "br-lan",
+    "ssh": {"user": "root", "password": "root", "key_file": "", "timeout": 5},
     "refresh_seconds": 30,
 }
 
-MAC_RE = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$", re.I)
-IFACE_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
-
-ProgressCallback = Callable[[int, str, Optional[str], Optional[str], Optional[str]], None]
+MAC_RE = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", re.I)
 
 
-@dataclass
-class Station:
-    mac: str
-    signal: Optional[int] = None
-    signal_avg: Optional[int] = None
-    tx_bitrate: str = ""
-    rx_bitrate: str = ""
-    inactive_ms: Optional[int] = None
-    connected_seconds: Optional[int] = None
+def ensure_config() -> Dict[str, Any]:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONFIG_FILE.exists():
+        CONFIG_FILE.write_text(json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))
 
-
-@dataclass
-class WirelessInterface:
-    ifname: str
-    mode: str
-    ssid: str
-    radio: str
-    band: str
-    section: str = ""
-    mac: str = ""
-
-
-@dataclass
-class Client:
-    node_ip: str
-    node_name: str
-    mac: str
-    interface: str
-    ssid: str
-    band: str
-    signal: Optional[int]
-    tx_bitrate: str = ""
-    rx_bitrate: str = ""
-    ip: str = ""
-    hostname: str = ""
-    connection_type: str = "Wi-Fi"
-    port: str = ""
-    bridge: str = ""
-    link_speed: str = ""
-    detection_source: str = ""
-    neighbor_state: str = ""
-    verification: str = ""
+    # Migrace starších webových verzí: zachovej uživatelská nastavení, ale
+    # doplň pevné názvy OpenWrt záloh podle IP adresy.
+    backup_names = {
+        "192.168.30.1": "ROUTER.tar.gz",
+        "192.168.30.2": "MESH1.tar.gz",
+        "192.168.30.3": "MESH2.tar.gz",
+        "192.168.30.4": "MESH3.tar.gz",
+        "192.168.30.5": "MESH4.tar.gz",
+    }
+    changed = False
+    routers = cfg.get("routers")
+    if not isinstance(routers, list) or not routers:
+        cfg["routers"] = json.loads(json.dumps(DEFAULT_CONFIG["routers"]))
+        routers = cfg["routers"]
+        changed = True
+    for router in routers:
+        ip = str(router.get("ip", ""))
+        wanted = backup_names.get(ip)
+        if wanted and router.get("backup_name") != wanted:
+            router["backup_name"] = wanted
+            changed = True
+    if "ssh" not in cfg:
+        cfg["ssh"] = json.loads(json.dumps(DEFAULT_CONFIG["ssh"]))
+        changed = True
+    if changed:
+        CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    return cfg
 
 
 @dataclass
-class NeighborEntry:
-    node_ip: str
-    node_name: str
-    ip: str
-    mac: str
-    dev: str
-    state: str
-
-
-@dataclass
-class LanObservation:
-    node_ip: str
-    node_name: str
-    mac: str
-    port: str
-    bridge: str
-    link_speed: str = ""
-    detection_source: str = "FDB"
-
-
-@dataclass
-class LanPortStatus:
-    node_ip: str
-    node_name: str
-    port: str
-    bridge: str
-    port_no: Optional[int] = None
-    operstate: str = "unknown"
-    carrier: bool = False
-    speed: str = ""
-    client_macs: Set[str] = field(default_factory=set)
-    is_uplink: bool = False
-
-    @property
-    def connected(self) -> bool:
-        return self.carrier or self.operstate.lower() == "up" or bool(self.client_macs)
-
-
-@dataclass
-class MeshPeer:
-    source_ip: str
-    source_ifname: str
-    peer_mac: str
-    signal: Optional[int]
-    tx_bitrate: str = ""
-    rx_bitrate: str = ""
-
-
-@dataclass
-class NodeResult:
+class NodeState:
     ip: str
     name: str
     online: bool = False
-    error: str = ""
     hostname: str = ""
     uptime: str = ""
-    load: str = ""
-    interfaces: List[WirelessInterface] = field(default_factory=list)
-    clients: List[Client] = field(default_factory=list)
-    lan_observations: List[LanObservation] = field(default_factory=list)
-    lan_ports: List[LanPortStatus] = field(default_factory=list)
-    mesh_peers: List[MeshPeer] = field(default_factory=list)
-    mesh_macs: Set[str] = field(default_factory=set)
-    local_macs: Set[str] = field(default_factory=set)
-    leases: Dict[str, Dict[str, str]] = field(default_factory=dict)
-    neighbors: Dict[str, str] = field(default_factory=dict)
-    neighbor_entries: List[NeighborEntry] = field(default_factory=list)
-    lan_detection_notes: List[str] = field(default_factory=list)
-    uci_wireless: str = ""
+    clients: int = 0
+    error: str = ""
 
 
-@dataclass
-class MeshLink:
-    a_ip: str
-    b_ip: str
-    signals: List[int] = field(default_factory=list)
-    tx_rates: List[str] = field(default_factory=list)
-    rx_rates: List[str] = field(default_factory=list)
+class OperationState:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.reset()
 
-    @property
-    def signal(self) -> Optional[int]:
-        if not self.signals:
-            return None
-        return round(sum(self.signals) / len(self.signals))
+    def reset(self) -> None:
+        with getattr(self, "_lock", threading.Lock()):
+            self.data = {
+                "running": False,
+                "title": "Připraveno",
+                "percent": 0,
+                "current": "",
+                "started": None,
+                "finished": None,
+                "nodes": {},
+                "log": [],
+                "result": "",
+            }
 
-    @property
-    def label(self) -> str:
-        parts: List[str] = []
-        if self.signal is not None:
-            parts.append(f"{self.signal} dBm")
-        rates = [rate for rate in self.tx_rates if rate]
-        if rates:
-            parts.append(rates[0])
-        return " · ".join(parts) if parts else "mesh"
+    def start(self, title: str, routers: List[Dict[str, str]]) -> bool:
+        with self._lock:
+            if self.data["running"]:
+                return False
+            self.data = {
+                "running": True,
+                "title": title,
+                "percent": 0,
+                "current": "Připravuji…",
+                "started": time.time(),
+                "finished": None,
+                "nodes": {r["ip"]: {"name": r["name"], "state": "ČEKÁ", "detail": ""} for r in routers},
+                "log": [],
+                "result": "",
+            }
+            return True
 
-
-def normalize_mac(value: str) -> str:
-    return value.strip().lower()
-
-
-def parse_station_dump(output: str) -> List[Station]:
-    stations: List[Station] = []
-    current: Optional[Station] = None
-    for raw_line in output.splitlines():
-        line = raw_line.strip()
-        match = re.match(r"^Station\s+([0-9a-f:]{17})\b", line, re.I)
-        if match:
+    def update(self, *, percent: Optional[int] = None, current: Optional[str] = None,
+               ip: Optional[str] = None, state: Optional[str] = None, detail: str = "",
+               log: Optional[str] = None) -> None:
+        with self._lock:
+            if percent is not None:
+                self.data["percent"] = max(0, min(100, int(percent)))
             if current is not None:
-                stations.append(current)
-            current = Station(mac=normalize_mac(match.group(1)))
-            continue
-        if current is None:
-            continue
-        match = re.match(r"^signal:\s*(-?\d+)", line)
-        if match:
-            current.signal = int(match.group(1)); continue
-        match = re.match(r"^signal avg:\s*(-?\d+)", line)
-        if match:
-            current.signal_avg = int(match.group(1)); continue
-        match = re.match(r"^tx bitrate:\s*(.+)$", line)
-        if match:
-            current.tx_bitrate = match.group(1).strip(); continue
-        match = re.match(r"^rx bitrate:\s*(.+)$", line)
-        if match:
-            current.rx_bitrate = match.group(1).strip(); continue
-        match = re.match(r"^inactive time:\s*(\d+)\s*ms", line)
-        if match:
-            current.inactive_ms = int(match.group(1)); continue
-        match = re.match(r"^connected time:\s*(\d+)\s*seconds", line)
-        if match:
-            current.connected_seconds = int(match.group(1))
-    if current is not None:
-        stations.append(current)
-    return stations
+                self.data["current"] = current
+            if ip and ip in self.data["nodes"] and state:
+                self.data["nodes"][ip]["state"] = state
+                self.data["nodes"][ip]["detail"] = detail
+            if log:
+                stamp = time.strftime("%H:%M:%S")
+                self.data["log"].append(f"[{stamp}] {log}")
+                self.data["log"] = self.data["log"][-120:]
 
+    def finish(self, result: str) -> None:
+        with self._lock:
+            self.data["running"] = False
+            self.data["percent"] = 100
+            self.data["current"] = result
+            self.data["result"] = result
+            self.data["finished"] = time.time()
 
-def parse_dhcp_leases(output: str, lan_network: ipaddress.IPv4Network) -> Dict[str, Dict[str, str]]:
-    leases: Dict[str, Dict[str, str]] = {}
-    for line in output.splitlines():
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        _expiry, mac, ip, hostname = parts[:4]
-        mac = normalize_mac(mac)
-        try:
-            address = ipaddress.ip_address(ip)
-        except ValueError:
-            continue
-        if address.version != 4 or address not in lan_network or address in {lan_network.network_address, lan_network.broadcast_address}:
-            continue
-        if MAC_RE.fullmatch(mac):
-            leases[mac] = {"ip": ip, "hostname": "" if hostname == "*" else hostname}
-    return leases
-
-
-def is_valid_lan_ipv4(value: str, lan_network: ipaddress.IPv4Network) -> bool:
-    try:
-        address = ipaddress.ip_address(value.strip())
-    except ValueError:
-        return False
-    if address.version != 4 or address not in lan_network:
-        return False
-    return address not in {lan_network.network_address, lan_network.broadcast_address}
-
-
-def parse_ip_neighbors(output: str, lan_bridge: str, lan_network: ipaddress.IPv4Network) -> Dict[str, str]:
-    neighbors: Dict[str, str] = {}
-    for line in output.splitlines():
-        match = re.search(r"^(\S+)\s+dev\s+(\S+).*?\blladdr\s+([0-9a-f:]{17})\b", line, re.I)
-        if match:
-            ip, dev, mac = match.groups()
-            if dev == lan_bridge and is_valid_lan_ipv4(ip, lan_network):
-                neighbors[normalize_mac(mac)] = ip
-    return neighbors
-
-
-def parse_ip_neighbor_entries(output: str, node_ip: str, node_name: str, lan_bridge: str, lan_network: ipaddress.IPv4Network) -> List[NeighborEntry]:
-    entries: List[NeighborEntry] = []
-    ignored_states = {"FAILED", "INCOMPLETE", "NOARP", "NONE"}
-    for raw_line in output.splitlines():
-        line = raw_line.strip()
-        match = re.search(r"^(\S+)\s+dev\s+(\S+).*?\blladdr\s+([0-9a-f:]{17})\b(?:.*?\s([A-Z]+))?$", line, re.I)
-        if not match:
-            continue
-        ip, dev, mac, state = match.groups()
-        mac = normalize_mac(mac)
-        state = (state or "UNKNOWN").upper()
-        if not is_valid_lan_ipv4(ip, lan_network) or dev != lan_bridge:
-            continue
-        if not MAC_RE.fullmatch(mac) or not is_unicast_mac(mac) or state in ignored_states:
-            continue
-        entries.append(NeighborEntry(node_ip=node_ip, node_name=node_name, ip=ip, mac=mac, dev=dev, state=state))
-    return entries
-
-
-def parse_interface_macs(output: str) -> Set[str]:
-    found: Set[str] = set()
-    for token in output.split():
-        mac = normalize_mac(token)
-        if MAC_RE.fullmatch(mac):
-            found.add(mac)
-    return found
-
-
-def parse_port_number(value: str) -> Optional[int]:
-    raw = value.strip().lower()
-    if not raw:
-        return None
-    try:
-        return int(raw, 0)
-    except ValueError:
-        try:
-            return int(raw, 16)
-        except ValueError:
-            return None
-
-
-def parse_bridge_ports(output: str) -> Dict[str, Dict[str, Any]]:
-    ports: Dict[str, Dict[str, Any]] = {}
-    for line in output.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 2:
-            parts = line.split()
-        if len(parts) < 2:
-            continue
-        bridge, port = parts[0].strip(), parts[1].strip()
-        speed = parts[2].strip() if len(parts) > 2 else ""
-        port_no = parse_port_number(parts[3]) if len(parts) > 3 else None
-        operstate = parts[4].strip().lower() if len(parts) > 4 else "unknown"
-        carrier_raw = parts[5].strip() if len(parts) > 5 else "0"
-        if speed in {"-1", "0", "unknown"}:
-            speed = ""
-        elif speed.isdigit():
-            speed = f"{speed} Mbit/s"
-        ports[port] = {"bridge": bridge, "speed": speed, "port_no": port_no, "operstate": operstate, "carrier": carrier_raw == "1"}
-    return ports
-
-
-def parse_brctl_showmacs(output: str, port_number_to_name: Dict[int, str]) -> List[Tuple[str, str]]:
-    entries: List[Tuple[str, str]] = []
-    for raw_line in output.splitlines():
-        match = re.match(r"^(\d+)\s+([0-9a-f:]{17})\s+(yes|no)\s+", raw_line.strip(), re.I)
-        if not match:
-            continue
-        port_no_raw, mac, is_local = match.groups()
-        if is_local.lower() == "yes":
-            continue
-        mac = normalize_mac(mac)
-        port = port_number_to_name.get(int(port_no_raw))
-        if port and MAC_RE.fullmatch(mac) and is_unicast_mac(mac):
-            entries.append((mac, port))
-    return entries
-
-
-def is_unicast_mac(mac: str) -> bool:
-    try:
-        return not (int(mac.split(":", 1)[0], 16) & 1)
-    except (ValueError, IndexError):
-        return False
-
-
-def parse_bridge_fdb(output: str) -> List[Tuple[str, str]]:
-    entries: List[Tuple[str, str]] = []
-    for raw_line in output.splitlines():
-        line = raw_line.strip()
-        match = re.match(r"^([0-9a-f:]{17})\s+dev\s+(\S+)", line, re.I)
-        if not match:
-            continue
-        mac, port = normalize_mac(match.group(1)), match.group(2)
-        flags = set(line.lower().split())
-        if not MAC_RE.fullmatch(mac) or not is_unicast_mac(mac) or flags.intersection({"self", "permanent", "local"}):
-            continue
-        entries.append((mac, port))
-    return entries
-
-
-def is_probable_ethernet_port(port: str, wireless_ifnames: Set[str]) -> bool:
-    name = port.lower()
-    if port in wireless_ifnames:
-        return False
-    excluded_prefixes = ("br", "lo", "wlan", "phy", "mesh", "wds", "bat", "ifb", "veth", "docker", "podman", "tap", "tun", "gre", "gretap", "vxlan", "bond")
-    return not name.startswith(excluded_prefixes)
-
-
-def band_label(value: Any, radio: str = "") -> str:
-    raw = str(value or "").lower()
-    if "2g" in raw or "2.4" in raw:
-        return "2,4 GHz"
-    if "5g" in raw or raw == "5" or "5ghz" in raw:
-        return "5 GHz"
-    if "6g" in raw or raw == "6" or "6ghz" in raw:
-        return "6 GHz"
-    if radio == "radio0":
-        return "2,4 GHz"
-    if radio == "radio1":
-        return "5 GHz"
-    return raw or "?"
-
-
-def parse_wireless_status(payload: str) -> List[WirelessInterface]:
-    try:
-        data = json.loads(payload)
-    except json.JSONDecodeError:
-        return []
-    interfaces: List[WirelessInterface] = []
-    for radio, radio_data in data.items():
-        if not isinstance(radio_data, dict):
-            continue
-        radio_cfg = radio_data.get("config") or {}
-        band = band_label(radio_cfg.get("band") or radio_cfg.get("hwmode"), radio)
-        for iface in radio_data.get("interfaces") or []:
-            if not isinstance(iface, dict):
-                continue
-            cfg = iface.get("config") or {}
-            ifname = str(iface.get("ifname") or "").strip()
-            mode = str(cfg.get("mode") or "").strip().lower()
-            ssid = str(cfg.get("ssid") or cfg.get("mesh_id") or "").strip()
-            section = str(iface.get("section") or cfg.get("section") or "").strip()
-            if ifname and mode:
-                interfaces.append(WirelessInterface(ifname=ifname, mode=mode, ssid=ssid, radio=radio, band=band, section=section))
-    return interfaces
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, set):
-        return sorted(value)
-    if hasattr(value, "__dataclass_fields__"):
-        return {k: _jsonable(v) for k, v in asdict(value).items()}
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(v) for v in value]
-    return value
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            out = json.loads(json.dumps(self.data))
+        if out.get("started"):
+            end = time.time() if out["running"] else (out.get("finished") or time.time())
+            out["elapsed"] = max(0, int(end - out["started"]))
+        else:
+            out["elapsed"] = 0
+        return out
 
 
 class MeshController:
     def __init__(self) -> None:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-        self.config = self._load_config()
-        self.routers: List[Dict[str, str]] = self.config["routers"]
-        self.main_node: str = self.config["main_node"]
-        self.ssh_user: str = self.config["ssh_user"]
-        self.ssh_password: str = self.config.get("ssh_password", "")
-        self.ssh_key_file: str = self.config.get("ssh_key_file", "")
-        self.ssh_timeout = int(self.config.get("ssh_timeout", 4))
-        self.command_timeout = int(self.config.get("command_timeout", 15))
-        self.lan_network = ipaddress.ip_network(self.config.get("lan_network", "192.168.30.0/24"))
-        self.lan_bridge = self.config.get("lan_bridge", "br-lan")
-        self.refresh_seconds = max(15, int(self.config.get("refresh_seconds", 30)))
-        self.lan_uplink_ports = self._load_uplinks()
-        self.node_results: Dict[str, NodeResult] = {}
-        self.mesh_links: List[MeshLink] = []
-        self.all_clients: List[Client] = []
-        self.last_refresh = ""
-        self.last_error = ""
-        self._lock = threading.RLock()
-        self._refresh_lock = threading.Lock()
-        self._logs: List[str] = []
-        self.log("[START] OpenWrt Mesh Controller WEB spuštěn.")
+        self.cfg = ensure_config()
+        self.routers: List[Dict[str, str]] = self.cfg.get("routers", DEFAULT_CONFIG["routers"])
+        self.operation = OperationState()
+        self._status_lock = threading.Lock()
+        self._snapshot: Dict[str, Any] = {"nodes": [], "links": [], "clients": [], "updated": None}
 
-    def _load_config(self) -> Dict[str, Any]:
-        if not CONFIG_FILE.exists():
-            CONFIG_FILE.write_text(json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2), encoding="utf-8")
-            return json.loads(json.dumps(DEFAULT_CONFIG))
-        try:
-            loaded = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            loaded = {}
-        merged = json.loads(json.dumps(DEFAULT_CONFIG))
-        merged.update(loaded if isinstance(loaded, dict) else {})
-        return merged
+    def reload_config(self) -> None:
+        self.cfg = ensure_config()
+        self.routers = self.cfg.get("routers", DEFAULT_CONFIG["routers"])
 
-    def _load_uplinks(self) -> Dict[str, Set[str]]:
-        defaults = {r["ip"]: set() for r in self.routers}
-        if not UPLINK_FILE.exists():
-            return defaults
-        try:
-            raw = json.loads(UPLINK_FILE.read_text(encoding="utf-8"))
-            for ip in defaults:
-                values = raw.get(ip, []) if isinstance(raw, dict) else []
-                defaults[ip] = {str(v) for v in values}
-        except Exception as exc:
-            self.log(f"[WARN] Uplink konfiguraci nelze načíst: {exc}")
-        return defaults
-
-    def save_uplinks(self, mapping: Dict[str, List[str]]) -> None:
-        cleaned = {r["ip"]: {str(p).strip() for p in mapping.get(r["ip"], []) if str(p).strip()} for r in self.routers}
-        UPLINK_FILE.write_text(json.dumps({k: sorted(v) for k, v in cleaned.items()}, ensure_ascii=False, indent=2), encoding="utf-8")
-        self.lan_uplink_ports = cleaned
-
-    def log(self, message: str) -> None:
-        line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}"
-        with self._lock:
-            self._logs.append(line)
-            self._logs = self._logs[-1000:]
-        try:
-            with LOG_FILE.open("a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        except OSError:
-            pass
-
-    def logs(self, limit: int = 250) -> List[str]:
-        with self._lock:
-            return self._logs[-max(1, min(limit, 1000)):]
-
-    def make_ssh_client(self, ip: str, timeout: Optional[int] = None) -> paramiko.SSHClient:
-        timeout = timeout or self.ssh_timeout
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        kwargs: Dict[str, Any] = {"hostname": ip, "username": self.ssh_user, "timeout": timeout, "banner_timeout": timeout, "auth_timeout": timeout}
-        if self.ssh_key_file:
-            kwargs["key_filename"] = self.ssh_key_file
-        if self.ssh_password:
-            kwargs.update({"password": self.ssh_password, "look_for_keys": False, "allow_agent": False})
-        else:
-            kwargs.update({"look_for_keys": True, "allow_agent": True})
-        ssh.connect(**kwargs)
-        return ssh
-
-    @staticmethod
-    def ssh_command(ssh: paramiko.SSHClient, command: str, timeout: int = 15) -> Tuple[str, str, int]:
-        _stdin, stdout, stderr = ssh.exec_command(command, timeout=timeout)
-        out = stdout.read().decode("utf-8", errors="replace")
-        err = stderr.read().decode("utf-8", errors="replace")
-        return out, err, stdout.channel.recv_exit_status()
-
-    @staticmethod
-    def ssh_script(ssh: paramiko.SSHClient, script: str, timeout: int = 45) -> Tuple[str, str, int]:
-        stdin, stdout, stderr = ssh.exec_command("/bin/sh -s", timeout=timeout)
-        stdin.write(script)
-        if not script.endswith("\n"):
-            stdin.write("\n")
-        stdin.flush(); stdin.channel.shutdown_write()
-        out = stdout.read().decode("utf-8", errors="replace")
-        err = stderr.read().decode("utf-8", errors="replace")
-        return out, err, stdout.channel.recv_exit_status()
-
-    def discover_node(self, router: Dict[str, Any]) -> NodeResult:
-        ip = router["ip"]
-        result = NodeResult(ip=ip, name=router["name"])
-        ssh: Optional[paramiko.SSHClient] = None
-        try:
-            ssh = self.make_ssh_client(ip)
-            result.online = True
-            out, _err, _code = self.ssh_command(ssh, "printf '%s\\n' \"$(uci -q get system.@system[0].hostname)\"; cut -d' ' -f1 /proc/uptime; cut -d' ' -f1-3 /proc/loadavg")
-            info_lines = out.splitlines()
-            if info_lines:
-                result.hostname = info_lines[0].strip()
-            if len(info_lines) > 1:
-                try:
-                    seconds = int(float(info_lines[1].strip())); days, rem = divmod(seconds, 86400); hours, rem = divmod(rem, 3600); minutes = rem // 60
-                    result.uptime = f"{days}d {hours}h {minutes}m"
-                except ValueError:
-                    result.uptime = info_lines[1].strip()
-            if len(info_lines) > 2:
-                result.load = info_lines[2].strip()
-
-            wireless_json, _e, _c = self.ssh_command(ssh, "ubus call network.wireless status 2>/dev/null || true")
-            result.interfaces = parse_wireless_status(wireless_json)
-            for iface in result.interfaces:
-                qif = shlex.quote(iface.ifname)
-                mac_out, _e, _c = self.ssh_command(ssh, f"cat /sys/class/net/{qif}/address 2>/dev/null || true")
-                iface.mac = normalize_mac(mac_out.splitlines()[0]) if mac_out.strip() else ""
-                station_out, _e, _c = self.ssh_command(ssh, f"iw dev {qif} station dump 2>/dev/null || true")
-                stations = parse_station_dump(station_out)
-                if iface.mode == "ap":
-                    for st in stations:
-                        result.clients.append(Client(node_ip=ip, node_name=result.name, mac=st.mac, interface=iface.ifname, ssid=iface.ssid, band=iface.band, signal=st.signal if st.signal is not None else st.signal_avg, tx_bitrate=st.tx_bitrate, rx_bitrate=st.rx_bitrate, connection_type="Wi-Fi", port=iface.ifname))
-                elif iface.mode in {"mesh", "mesh_point", "mp"}:
-                    if iface.mac and MAC_RE.fullmatch(iface.mac):
-                        result.mesh_macs.add(iface.mac)
-                    for st in stations:
-                        result.mesh_peers.append(MeshPeer(source_ip=ip, source_ifname=iface.ifname, peer_mac=st.mac, signal=st.signal if st.signal is not None else st.signal_avg, tx_bitrate=st.tx_bitrate, rx_bitrate=st.rx_bitrate))
-
-            local_macs_out, _e, _c = self.ssh_command(ssh, 'for f in /sys/class/net/*/address; do [ -r "$f" ] || continue; cat "$f"; done')
-            result.local_macs = parse_interface_macs(local_macs_out)
-            bridge_ports_out, _e, _c = self.ssh_command(ssh, 'for brif in /sys/class/net/*/brif; do [ -d "$brif" ] || continue; br=${brif%/brif}; br=${br##*/}; for path in "$brif"/*; do [ -e "$path" ] || continue; dev=${path##*/}; speed=$(cat "/sys/class/net/$dev/speed" 2>/dev/null); portno=$(cat "$path/port_no" 2>/dev/null); oper=$(cat "/sys/class/net/$dev/operstate" 2>/dev/null); carrier=$(cat "/sys/class/net/$dev/carrier" 2>/dev/null); printf "%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$br" "$dev" "$speed" "$portno" "$oper" "$carrier"; done; done')
-            bridge_ports = parse_bridge_ports(bridge_ports_out)
-            wireless_ifnames = {iface.ifname for iface in result.interfaces}
-            excluded_uplinks = self.lan_uplink_ports.get(ip, set())
-            for port, info in sorted(bridge_ports.items()):
-                if info.get("bridge") != self.lan_bridge or port.lower().startswith(("wan", "pppoe", "wwan")) or not is_probable_ethernet_port(port, wireless_ifnames):
-                    continue
-                result.lan_ports.append(LanPortStatus(node_ip=ip, node_name=result.name, port=port, bridge=info.get("bridge", ""), port_no=info.get("port_no"), operstate=info.get("operstate", "unknown"), carrier=bool(info.get("carrier")), speed=info.get("speed", ""), is_uplink=port in excluded_uplinks))
-
-            fdb_raw, fdb_err, fdb_code = self.ssh_command(ssh, f"if command -v bridge >/dev/null 2>&1; then echo __BRIDGE__; bridge fdb show 2>/dev/null; elif command -v brctl >/dev/null 2>&1; then echo __BRCTL__; brctl showmacs {shlex.quote(self.lan_bridge)} 2>/dev/null; else echo __NONE__; fi")
-            fdb_lines = fdb_raw.splitlines(); method = fdb_lines[0].strip() if fdb_lines else "__NONE__"; payload = "\n".join(fdb_lines[1:])
-            number_map = {int(info["port_no"]): p for p, info in bridge_ports.items() if info.get("port_no") is not None}
-            if method == "__BRIDGE__":
-                entries, source = parse_bridge_fdb(payload), "bridge FDB"
-            elif method == "__BRCTL__":
-                entries, source = parse_brctl_showmacs(payload, number_map), "brctl"
-            else:
-                entries, source = [], "bez FDB nástroje"; result.lan_detection_notes.append("Chybí bridge i brctl.")
-            if fdb_code != 0:
-                result.lan_detection_notes.append(f"Čtení FDB: {(fdb_err or 'chyba').strip()}")
-            elif not entries:
-                result.lan_detection_notes.append(f"{source}: žádná dynamická MAC.")
-            status_by_name = {item.port: item for item in result.lan_ports}
-            for mac, port in entries:
-                info = bridge_ports.get(port)
-                if not info or info.get("bridge") != self.lan_bridge or port in excluded_uplinks or port.lower().startswith(("wan", "pppoe", "wwan")) or not is_probable_ethernet_port(port, wireless_ifnames):
-                    continue
-                if port in status_by_name:
-                    status_by_name[port].client_macs.add(mac)
-                result.lan_observations.append(LanObservation(node_ip=ip, node_name=result.name, mac=mac, port=port, bridge=info.get("bridge", ""), link_speed=info.get("speed", ""), detection_source="FDB" if method == "__BRIDGE__" else "brctl"))
-
-            leases_out, _e, _c = self.ssh_command(ssh, "cat /tmp/dhcp.leases 2>/dev/null || true")
-            result.leases = parse_dhcp_leases(leases_out, self.lan_network)
-            neigh_out, _e, _c = self.ssh_command(ssh, f"ip -4 neigh show dev {shlex.quote(self.lan_bridge)} 2>/dev/null || ip neigh show dev {shlex.quote(self.lan_bridge)} 2>/dev/null || true")
-            result.neighbors = parse_ip_neighbors(neigh_out, self.lan_bridge, self.lan_network)
-            result.neighbor_entries = parse_ip_neighbor_entries(neigh_out, ip, result.name, self.lan_bridge, self.lan_network)
-            result.uci_wireless, _e, _c = self.ssh_command(ssh, "uci show wireless 2>/dev/null || true")
-        except Exception as exc:
-            result.online = False; result.error = str(exc)
-        finally:
-            if ssh is not None:
-                ssh.close()
-        return result
-
-    def build_mesh_links(self, results: Dict[str, NodeResult]) -> List[MeshLink]:
-        mesh_mac_to_ip: Dict[str, str] = {}
-        for node in results.values():
-            for mac in node.mesh_macs:
-                mesh_mac_to_ip[mac] = node.ip
-        links: Dict[Tuple[str, str], MeshLink] = {}
-        for node in results.values():
-            for peer in node.mesh_peers:
-                peer_ip = mesh_mac_to_ip.get(peer.peer_mac)
-                if not peer_ip or peer_ip == node.ip:
-                    continue
-                a_ip, b_ip = sorted((node.ip, peer_ip))
-                key = (a_ip, b_ip)
-                link = links.setdefault(key, MeshLink(a_ip=a_ip, b_ip=b_ip))
-                if peer.signal is not None: link.signals.append(peer.signal)
-                if peer.tx_bitrate: link.tx_rates.append(peer.tx_bitrate)
-                if peer.rx_bitrate: link.rx_rates.append(peer.rx_bitrate)
-        return list(links.values())
-
-    def enrich_clients(self, results: Dict[str, NodeResult]) -> List[Client]:
-        leases: Dict[str, Dict[str, str]] = {}; neighbors: Dict[str, str] = {}; local_macs: Set[str] = set(); mesh_macs: Set[str] = set()
-        for node in results.values():
-            leases.update(node.leases); neighbors.update(node.neighbors); local_macs.update(node.local_macs); mesh_macs.update(node.mesh_macs)
-        clients: List[Client] = []; seen_wifi: Set[Tuple[str, str, str]] = set(); wifi_macs: Set[str] = set()
-        for node in results.values():
-            for c in node.clients:
-                key = (c.node_ip, c.interface, c.mac)
-                if key in seen_wifi: continue
-                seen_wifi.add(key); wifi_macs.add(c.mac)
-                lease = leases.get(c.mac, {}); c.ip = lease.get("ip") or neighbors.get(c.mac, ""); c.hostname = lease.get("hostname", ""); c.detection_source = "iw station"; c.verification = "Potvrzený Wi-Fi klient"; clients.append(c)
-        lan_candidates: Dict[str, List[LanObservation]] = {}
-        for node in results.values():
-            for obs in node.lan_observations:
-                if obs.mac in local_macs or obs.mac in mesh_macs or obs.mac in wifi_macs: continue
-                lan_candidates.setdefault(obs.mac, []).append(obs)
-        direct_lan_macs: Set[str] = set()
-        for mac, observations in sorted(lan_candidates.items()):
-            observations.sort(key=lambda item: (0 if item.port.lower().startswith(("lan", "eth")) else 1, item.node_ip, item.port)); selected = observations[0]; lease = leases.get(mac, {}); direct_lan_macs.add(mac)
-            clients.append(Client(node_ip=selected.node_ip, node_name=selected.node_name, mac=mac, interface=selected.port, ssid="", band="Ethernet", signal=None, ip=lease.get("ip") or neighbors.get(mac, ""), hostname=lease.get("hostname", ""), connection_type="LAN", port=selected.port, bridge=selected.bridge, link_speed=selected.link_speed, detection_source=selected.detection_source, verification="Potvrzený LAN klient přes fyzický port"))
-        state_priority = {"REACHABLE": 0, "DELAY": 1, "PROBE": 2, "STALE": 3, "PERMANENT": 4, "UNKNOWN": 5}; fallback: Dict[str, List[NeighborEntry]] = {}
-        for node in results.values():
-            wireless = {iface.ifname for iface in node.interfaces}
-            for entry in node.neighbor_entries:
-                if entry.mac in local_macs or entry.mac in mesh_macs or entry.mac in wifi_macs or entry.mac in direct_lan_macs or entry.dev in wireless: continue
-                fallback.setdefault(entry.mac, []).append(entry)
-        for mac, entries in sorted(fallback.items()):
-            entries.sort(key=lambda e: (state_priority.get(e.state, 9), 0 if e.node_ip == self.main_node else 1, e.node_ip)); selected = entries[0]; lease = leases.get(mac, {})
-            clients.append(Client(node_ip=selected.node_ip, node_name=selected.node_name, mac=mac, interface=selected.dev, ssid="", band="Ethernet", signal=None, ip=lease.get("ip") or selected.ip or neighbors.get(mac, ""), hostname=lease.get("hostname", ""), connection_type="Neurčené", port="Port nezjištěn", bridge=selected.dev, detection_source="ARP", neighbor_state=selected.state, verification="Pouze ARP – není potvrzený LAN port"))
-        return clients
-
-    def refresh(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
-        if not self._refresh_lock.acquire(blocking=False):
-            if progress:
-                progress(100, "Obnovení už probíhá v jiném vlákně; používám aktuální stav.", None, None, None)
-            return self.snapshot()
-        try:
-            self.log("[INFO] Zahajuji paralelní SSH diagnostiku všech uzlů…")
-            if progress:
-                progress(0, "Zahajuji SSH diagnostiku všech uzlů…", None, None, None)
-            results: Dict[str, NodeResult] = {}
-            lock = threading.Lock()
-            threads: List[threading.Thread] = []
-            total = max(1, len(self.routers))
-            completed = 0
-
-            def worker(router: Dict[str, Any]) -> None:
-                nonlocal completed
-                ip = str(router["ip"])
-                if progress:
-                    progress(max(2, int(completed * 88 / total)), f"{ip} – načítám stav přes SSH…", ip, "running", "Načítám Wi-Fi, klienty, LAN porty a mesh spoje.")
-                node = self.discover_node(router)
-                with lock:
-                    results[node.ip] = node
-                    completed += 1
-                    percent = min(90, int(completed * 90 / total))
-                if node.online:
-                    detail = f"Wi-Fi {len(node.clients)}, LAN porty {sum(p.connected for p in node.lan_ports)}/{len(node.lan_ports)}, mesh {len(node.mesh_peers)}"
-                    self.log(f"[OK] {node.ip}: {detail}")
-                    if progress:
-                        progress(percent, f"{node.ip} – diagnostika hotová.", node.ip, "done", detail)
-                else:
-                    detail = node.error or "SSH nedostupné"
-                    self.log(f"[OFFLINE] {node.ip}: {detail}")
-                    if progress:
-                        progress(percent, f"{node.ip} – nedostupný.", node.ip, "error", detail)
-
-            for router in self.routers:
-                t = threading.Thread(target=worker, args=(router,), daemon=True)
-                t.start()
-                threads.append(t)
-            for t in threads:
-                t.join()
-
-            if progress:
-                progress(94, "Sestavuji mesh topologii a seznam klientů…", None, None, None)
-            for router in self.routers:
-                results.setdefault(router["ip"], NodeResult(ip=router["ip"], name=router["name"], online=False))
-            links = self.build_mesh_links(results)
-            clients = self.enrich_clients(results)
-            with self._lock:
-                self.node_results = results
-                self.mesh_links = links
-                self.all_clients = clients
-                self.last_refresh = time.strftime("%Y-%m-%d %H:%M:%S")
-                self.last_error = ""
-            self.log(f"[HOTOVO] Online {sum(n.online for n in results.values())}/{len(self.routers)}, klienti {len(clients)}, mesh spoje {len(links)}.")
-            if progress:
-                progress(100, f"Hotovo – online {sum(n.online for n in results.values())}/{len(self.routers)}, klienti {len(clients)}, mesh spoje {len(links)}.", None, None, None)
-            return self.snapshot()
-        except Exception as exc:
-            self.last_error = str(exc)
-            self.log(f"[KRITICKÁ CHYBA] {exc}")
-            raise
-        finally:
-            self._refresh_lock.release()
-
-    def snapshot(self) -> Dict[str, Any]:
-        with self._lock:
-            nodes = {ip: _jsonable(node) for ip, node in self.node_results.items()}
-            links = []
-            for link in self.mesh_links:
-                d = _jsonable(link); d["signal"] = link.signal; d["label"] = link.label; links.append(d)
-            clients = [_jsonable(c) for c in self.all_clients]
-            lease_macs: Set[str] = set()
-            for node in self.node_results.values(): lease_macs.update(node.leases.keys())
-            summary = {
-                "online": sum(1 for n in self.node_results.values() if n.online), "total_nodes": len(self.routers), "clients": len(clients),
-                "wifi": sum(c.connection_type == "Wi-Fi" for c in self.all_clients), "lan": sum(c.connection_type == "LAN" for c in self.all_clients), "unknown": sum(c.connection_type == "Neurčené" for c in self.all_clients),
-                "mesh_links": len(self.mesh_links), "leases": len(lease_macs), "last_refresh": self.last_refresh, "last_error": self.last_error,
-            }
-            return {"summary": summary, "nodes": nodes, "links": links, "clients": clients, "routers": self.routers, "uplinks": {k: sorted(v) for k, v in self.lan_uplink_ports.items()}}
-
-    def active_scan(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
-        self.log("[SCAN] Aktivní průzkum LAN…")
-        if progress:
-            progress(0, "Aktivní průzkum LAN 192.168.30.0/24…", None, None, None)
-        prefix = str(self.lan_network.network_address).rsplit(".", 1)[0]
-
-        def ping_ip(i: int) -> None:
-            subprocess.run(
-                ["ping", "-c", "1", "-W", "1", f"{prefix}.{i}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=3,
-                check=False,
-            )
-
-        workers: List[threading.Thread] = []
-        scanned = 0
-        for i in range(1, 255):
-            t = threading.Thread(target=ping_ip, args=(i,), daemon=True)
-            t.start()
-            workers.append(t)
-            if len(workers) >= 40:
-                for worker in workers:
-                    worker.join()
-                scanned += len(workers)
-                workers = []
-                if progress:
-                    progress(min(68, int(scanned * 68 / 254)), f"Prohledáno {scanned}/254 adres…", None, None, None)
-        for worker in workers:
-            worker.join()
-        scanned += len(workers)
-        if progress:
-            progress(70, "Průzkum LAN dokončen, načítám nové ARP/FDB údaje…", None, None, None)
-
-        def scaled_refresh(percent: int, message: str, ip: Optional[str], status: Optional[str], detail: Optional[str]) -> None:
-            if progress:
-                progress(70 + int(max(0, min(100, percent)) * 0.30), message, ip, status, detail)
-
-        return self.refresh(progress=scaled_refresh)
-
-    def backup_configs(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
-        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        backup_dir = BACKUP_DIR / f"BACKUP_{timestamp}"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        success = failed = 0
-        names = ("wireless", "network", "dhcp", "dawn")
-        total = max(1, len(self.routers))
-        if progress:
-            progress(0, f"Vytvářím zálohu do {backup_dir}…", None, None, None)
-
-        for index, router in enumerate(self.routers, start=1):
-            ip = router["ip"]
-            node_dir = backup_dir / ip
-            node_dir.mkdir(parents=True, exist_ok=True)
-            ssh = None
-            if progress:
-                progress(int((index - 1) * 100 / total), f"{ip} – zálohuji konfiguraci…", ip, "running", "wireless / network / dhcp / dawn")
-            try:
-                ssh = self.make_ssh_client(ip, timeout=6)
-                for name in names:
-                    out, _err, _code = self.ssh_command(ssh, f"cat /etc/config/{shlex.quote(name)} 2>/dev/null || true")
-                    (node_dir / name).write_text(out, encoding="utf-8")
-                (node_dir / "metadata.json").write_text(
-                    json.dumps({"ip": ip, "name": router["name"], "created": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                success += 1
-                self.log(f"[ZÁLOHA OK] {ip}")
-                if progress:
-                    progress(int(index * 100 / total), f"{ip} – záloha hotová.", ip, "done", "Uloženo do persistentního /data/backups.")
-            except Exception as exc:
-                failed += 1
-                (node_dir / "ERROR.txt").write_text(str(exc), encoding="utf-8")
-                self.log(f"[ZÁLOHA CHYBA] {ip}: {exc}")
-                if progress:
-                    progress(int(index * 100 / total), f"{ip} – záloha selhala.", ip, "error", str(exc))
-            finally:
-                if ssh is not None:
-                    ssh.close()
-
-        summary = {
-            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "success_nodes": success,
-            "failed_nodes": failed,
-            "nodes": [r["ip"] for r in self.routers],
+    def ssh_client(self, ip: str, timeout: Optional[int] = None) -> paramiko.SSHClient:
+        ssh_cfg = self.cfg.get("ssh", {})
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        kwargs: Dict[str, Any] = {
+            "hostname": ip,
+            "username": ssh_cfg.get("user", "root"),
+            "timeout": timeout or int(ssh_cfg.get("timeout", 5)),
+            "banner_timeout": timeout or int(ssh_cfg.get("timeout", 5)),
+            "auth_timeout": timeout or int(ssh_cfg.get("timeout", 5)),
+            "look_for_keys": False,
+            "allow_agent": False,
         }
-        (backup_dir / "backup_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-        if progress:
-            progress(100, f"Záloha dokončena – úspěch {success}, chyba {failed}.", None, None, None)
-        return {"ok": failed == 0, "backup_dir": str(backup_dir), "success": success, "failed": failed}
-
-    def ping_all(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
-        results = []
-        total = max(1, len(self.routers))
-        if progress:
-            progress(0, "Spouštím ping test všech uzlů…", None, None, None)
-        for index, router in enumerate(self.routers, start=1):
-            ip = router["ip"]
-            if progress:
-                progress(int((index - 1) * 100 / total), f"{ip} – ping…", ip, "running", "Čekám na odpověď.")
-            try:
-                cp = subprocess.run(["ping", "-c", "1", "-W", "1", ip], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3, check=False)
-                ok = cp.returncode == 0
-                results.append({"ip": ip, "ok": ok})
-                if progress:
-                    progress(int(index * 100 / total), f"{ip} – {'odpovídá' if ok else 'bez odpovědi'}.", ip, "done" if ok else "error", "PING OK" if ok else "PING bez odpovědi")
-            except Exception as exc:
-                results.append({"ip": ip, "ok": False, "error": str(exc)})
-                if progress:
-                    progress(int(index * 100 / total), f"{ip} – ping chyba.", ip, "error", str(exc))
-        success = sum(r["ok"] for r in results)
-        if progress:
-            progress(100, f"Ping test dokončen – {success}/{len(results)} uzlů odpovídá.", None, None, None)
-        return {"results": results, "success": success}
-
-    def reboot_all(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
-        success = failed = 0
-        total = max(1, len(self.routers))
-        if progress:
-            progress(0, "Odesílám restart všem routerům…", None, None, None)
-        for index, router in enumerate(self.routers, start=1):
-            ip = router["ip"]
-            ssh = None
-            if progress:
-                progress(int((index - 1) * 100 / total), f"{ip} – odesílám příkaz reboot…", ip, "running", "SSH připojení se po příkazu může ukončit.")
-            try:
-                ssh = self.make_ssh_client(ip, timeout=5)
-                ssh.exec_command("(sleep 1; reboot) >/dev/null 2>&1 &")
-                success += 1
-                self.log(f"[REBOOT OK] {ip}")
-                if progress:
-                    progress(int(index * 100 / total), f"{ip} – restart odeslán.", ip, "done", "Příkaz reboot byl přijat.")
-            except Exception as exc:
-                failed += 1
-                self.log(f"[REBOOT CHYBA] {ip}: {exc}")
-                if progress:
-                    progress(int(index * 100 / total), f"{ip} – restart selhal.", ip, "error", str(exc))
-            finally:
-                if ssh is not None:
-                    ssh.close()
-        if progress:
-            progress(100, f"Restart odeslán – úspěch {success}, chyba {failed}.", None, None, None)
-        return {"ok": failed == 0, "success": success, "failed": failed}
-
-    def maintenance_status(self) -> Dict[str, Any]:
-        ssh = None
-        try:
-            ssh = self.make_ssh_client(self.main_node, timeout=6)
-            script = r'''set -u
-OVERLAY_DEV=$(df -P /overlay 2>/dev/null | awk 'NR==2 {print $1}')
-OVERLAY_FREE=$(df -hP /overlay 2>/dev/null | awk 'NR==2 {print $4}')
-[ -n "$OVERLAY_DEV" ] || OVERLAY_DEV='N/A'
-[ -n "$OVERLAY_FREE" ] || OVERLAY_FREE='N/A'
-case "$OVERLAY_DEV" in /dev/sd*) OVERLAY_TYPE='USB overlay' ;; *) OVERLAY_TYPE='Vnitřní paměť' ;; esac
-if command -v apk >/dev/null 2>&1; then PKG='apk'; elif command -v opkg >/dev/null 2>&1; then PKG='opkg'; else PKG='nenalezen'; fi
-LED_MODE=$(cat /etc/mesh_led_mode 2>/dev/null || echo default)
-USB_DEV=$(ls /dev/sd[a-z] 2>/dev/null | head -n1); [ -n "$USB_DEV" ] || USB_DEV='nenalezen'
-printf 'OVERLAY_DEV=%s\nOVERLAY_TYPE=%s\nOVERLAY_FREE=%s\nPKG=%s\nLED_MODE=%s\nUSB_DEV=%s\n' "$OVERLAY_DEV" "$OVERLAY_TYPE" "$OVERLAY_FREE" "$PKG" "$LED_MODE" "$USB_DEV"
-'''
-            out, err, code = self.ssh_script(ssh, script, timeout=20)
-            if code != 0: raise RuntimeError((err or out).strip() or f"návratový kód {code}")
-            values = {}
-            for line in out.splitlines():
-                if "=" in line:
-                    k, v = line.split("=", 1); values[k.strip()] = v.strip()
-            return {"ok": True, "values": values}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc), "values": {}}
-        finally:
-            if ssh is not None: ssh.close()
+        key_file = str(ssh_cfg.get("key_file", "") or "").strip()
+        password = str(ssh_cfg.get("password", "") or "")
+        if key_file:
+            kwargs["key_filename"] = key_file
+        else:
+            kwargs["password"] = password
+        client.connect(**kwargs)
+        return client
 
     @staticmethod
-    def make_persistent_led_script(mode: str) -> str:
-        quoted_mode = shlex.quote(mode)
+    def command(client: paramiko.SSHClient, command: str, timeout: int = 30) -> Tuple[str, str, int]:
+        stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+        code = stdout.channel.recv_exit_status()
+        out = stdout.read().decode("utf-8", errors="replace")
+        err = stderr.read().decode("utf-8", errors="replace")
+        return out, err, code
+
+    @staticmethod
+    def script(client: paramiko.SSHClient, script: str, timeout: int = 60) -> Tuple[str, str, int]:
+        stdin, stdout, stderr = client.exec_command("sh -s", timeout=timeout)
+        stdin.write(script)
+        stdin.channel.shutdown_write()
+        code = stdout.channel.recv_exit_status()
+        out = stdout.read().decode("utf-8", errors="replace")
+        err = stderr.read().decode("utf-8", errors="replace")
+        return out, err, code
+
+    def get_snapshot(self) -> Dict[str, Any]:
+        with self._status_lock:
+            return json.loads(json.dumps(self._snapshot))
+
+    def refresh_snapshot(self) -> Dict[str, Any]:
+        node_states: List[Dict[str, Any]] = []
+        raw_nodes: Dict[str, Dict[str, Any]] = {}
+        mac_to_ip: Dict[str, str] = {}
+        clients: List[Dict[str, str]] = []
+
+        for router in self.routers:
+            ip = router["ip"]
+            state = NodeState(ip=ip, name=router["name"])
+            data: Dict[str, Any] = {"mesh_peers": [], "freqs": {}, "local_macs": []}
+            client = None
+            try:
+                client = self.ssh_client(ip, 4)
+                cmd = r'''printf 'HOST='; hostname 2>/dev/null || true
+printf 'UP='; cut -d. -f1 /proc/uptime 2>/dev/null || true
+printf 'MACS='; for f in /sys/class/net/*/address; do cat "$f" 2>/dev/null; done | tr '\n' ' '; echo
+printf 'WIRELESS_BEGIN\n'; ubus call network.wireless status 2>/dev/null || true; printf '\nWIRELESS_END\n'
+printf 'IW_BEGIN\n'; iw dev 2>/dev/null || true; printf '\nIW_END\n'
+printf 'NEIGH_BEGIN\n'; ip neigh show dev br-lan 2>/dev/null || true; printf '\nNEIGH_END\n'
+'''
+                out, err, code = self.command(client, cmd, 15)
+                state.online = True
+                host = re.search(r"^HOST=(.*)$", out, re.M)
+                up = re.search(r"^UP=(.*)$", out, re.M)
+                macs = re.search(r"^MACS=(.*)$", out, re.M)
+                state.hostname = host.group(1).strip() if host else ""
+                if up and up.group(1).strip().isdigit():
+                    sec = int(up.group(1).strip())
+                    state.uptime = f"{sec // 86400}d {(sec % 86400) // 3600}h"
+                if macs:
+                    data["local_macs"] = [m.lower() for m in MAC_RE.findall(macs.group(1))]
+                    for m in data["local_macs"]:
+                        mac_to_ip[m] = ip
+
+                w = re.search(r"WIRELESS_BEGIN\n(.*?)\nWIRELESS_END", out, re.S)
+                wireless_json = {}
+                if w:
+                    try:
+                        wireless_json = json.loads(w.group(1).strip() or "{}")
+                    except Exception:
+                        wireless_json = {}
+                iw_match = re.search(r"IW_BEGIN\n(.*?)\nIW_END", out, re.S)
+                iw_text = iw_match.group(1) if iw_match else ""
+                iface_blocks = re.split(r"\n\s*Interface\s+", "\n" + iw_text)
+                mesh_ifaces: List[str] = []
+                for block in iface_blocks[1:]:
+                    lines = block.strip().splitlines()
+                    if not lines:
+                        continue
+                    ifname = lines[0].strip()
+                    body = "\n".join(lines[1:])
+                    if re.search(r"\btype\s+mesh point\b", body):
+                        mesh_ifaces.append(ifname)
+                    freq = re.search(r"\bchannel\s+\d+\s+\((\d+)\s+MHz\)", body)
+                    if freq:
+                        data["freqs"][ifname] = int(freq.group(1))
+
+                # fallback detect mesh interfaces from ubus
+                for radio_data in wireless_json.values() if isinstance(wireless_json, dict) else []:
+                    if not isinstance(radio_data, dict):
+                        continue
+                    for iface in radio_data.get("interfaces", []) or []:
+                        cfg = iface.get("config", {}) or {}
+                        if str(cfg.get("mode", "")).lower() == "mesh":
+                            ifname = str(iface.get("ifname", "")).strip()
+                            if ifname and ifname not in mesh_ifaces:
+                                mesh_ifaces.append(ifname)
+
+                for ifname in mesh_ifaces:
+                    safe_if = shlex.quote(ifname)
+                    peer_out, _, _ = self.command(client, f"iw dev {safe_if} station dump 2>/dev/null || true", 8)
+                    current: Optional[Dict[str, Any]] = None
+                    for line in peer_out.splitlines():
+                        m = re.match(r"^Station\s+([0-9a-f:]{17})", line.strip(), re.I)
+                        if m:
+                            if current:
+                                data["mesh_peers"].append(current)
+                            current = {"mac": m.group(1).lower(), "signal": None, "speed": "", "freq": data["freqs"].get(ifname), "ifname": ifname}
+                            continue
+                        if not current:
+                            continue
+                        s = re.match(r"^signal:\s*(-?\d+)", line.strip())
+                        if s:
+                            current["signal"] = int(s.group(1))
+                        t = re.match(r"^tx bitrate:\s*([0-9.]+)\s*MBit/s", line.strip(), re.I)
+                        if t:
+                            current["speed"] = f"{t.group(1)} Mbit/s"
+                    if current:
+                        data["mesh_peers"].append(current)
+
+                neigh_match = re.search(r"NEIGH_BEGIN\n(.*?)\nNEIGH_END", out, re.S)
+                neigh_text = neigh_match.group(1) if neigh_match else ""
+                for line in neigh_text.splitlines():
+                    m = re.search(r"^(\S+)\s+dev\s+br-lan.*?lladdr\s+([0-9a-f:]{17})\s+(\S+)", line, re.I)
+                    if m and m.group(3).upper() not in {"FAILED", "INCOMPLETE"}:
+                        clients.append({"node": router["name"], "node_ip": ip, "ip": m.group(1), "mac": m.group(2).lower(), "type": "LAN/Wi-Fi"})
+                state.clients = sum(1 for c in clients if c["node_ip"] == ip)
+            except Exception as exc:
+                state.error = str(exc)
+            finally:
+                if client:
+                    client.close()
+            raw_nodes[ip] = data
+            node_states.append(asdict(state))
+
+        links_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for source_ip, data in raw_nodes.items():
+            for peer in data.get("mesh_peers", []):
+                target_ip = mac_to_ip.get(peer.get("mac", ""))
+                if not target_ip or target_ip == source_ip:
+                    continue
+                key = tuple(sorted((source_ip, target_ip)))
+                link = links_by_key.setdefault(key, {
+                    "a": key[0], "b": key[1], "signals": [], "speeds": [], "freqs": []
+                })
+                if peer.get("signal") is not None:
+                    link["signals"].append(peer["signal"])
+                if peer.get("speed"):
+                    try:
+                        link["speeds"].append(float(str(peer["speed"]).split()[0]))
+                    except Exception:
+                        pass
+                if peer.get("freq"):
+                    link["freqs"].append(int(peer["freq"]))
+
+        links: List[Dict[str, Any]] = []
+        for link in links_by_key.values():
+            signal = round(sum(link["signals"]) / len(link["signals"])) if link["signals"] else None
+            speed = max(link["speeds"]) if link["speeds"] else None
+            freq = round(sum(link["freqs"]) / len(link["freqs"])) if link["freqs"] else None
+            links.append({"a": link["a"], "b": link["b"], "dbm": signal, "speed_mbps": speed, "mhz": freq})
+
+        snapshot = {"nodes": node_states, "links": links, "clients": clients, "updated": time.time()}
+        with self._status_lock:
+            self._snapshot = snapshot
+        return snapshot
+
+    def _run_per_router(self, title: str, worker: Callable[[Dict[str, str]], Tuple[bool, str]], result_label: str) -> None:
+        if not self.operation.start(title, self.routers):
+            return
+        ok_count = 0
+        total = len(self.routers)
+        for index, router in enumerate(self.routers):
+            ip = router["ip"]
+            self.operation.update(percent=int(index * 100 / total), current=f"{router['name']} ({ip})…", ip=ip, state="PROBÍHÁ", log=f"{router['name']} ({ip}) – start")
+            try:
+                ok, detail = worker(router)
+            except Exception as exc:
+                ok, detail = False, str(exc)
+            if ok:
+                ok_count += 1
+                self.operation.update(ip=ip, state="HOTOVO", detail=detail, log=f"{router['name']} – OK: {detail}")
+            else:
+                self.operation.update(ip=ip, state="CHYBA", detail=detail, log=f"{router['name']} – CHYBA: {detail}")
+            self.operation.update(percent=int((index + 1) * 100 / total))
+        self.operation.finish(f"{result_label}: {ok_count}/{total} OK")
+
+    def start_ping(self) -> bool:
+        if self.operation.snapshot()["running"]:
+            return False
+        def worker(router: Dict[str, str]) -> Tuple[bool, str]:
+            c = self.ssh_client(router["ip"], 4)
+            try:
+                return True, "SSH dostupné"
+            finally:
+                c.close()
+        threading.Thread(target=self._run_per_router, args=("Test dostupnosti uzlů", worker, "Dostupnost"), daemon=True).start()
+        return True
+
+    @staticmethod
+    def update_script() -> str:
+        return r'''set -e
+if command -v apk >/dev/null 2>&1; then
+  echo MANAGER=apk
+  apk update
+  apk upgrade
+elif command -v opkg >/dev/null 2>&1; then
+  echo MANAGER=opkg
+  opkg update
+  PKGS="$(opkg list-upgradable | awk '{print $1}')"
+  [ -z "$PKGS" ] || opkg upgrade $PKGS
+else
+  echo "Nenalezen apk ani opkg" >&2
+  exit 127
+fi
+echo UPDATE_OK
+'''
+
+    def start_update(self) -> bool:
+        if self.operation.snapshot()["running"]:
+            return False
+        def worker(router: Dict[str, str]) -> Tuple[bool, str]:
+            c = self.ssh_client(router["ip"], 8)
+            try:
+                out, err, code = self.script(c, self.update_script(), 1800)
+                if code == 0 and "UPDATE_OK" in out:
+                    manager = "apk" if "MANAGER=apk" in out else "opkg" if "MANAGER=opkg" in out else "balíčky"
+                    return True, f"{manager} aktualizováno"
+                return False, (err or out or f"exit {code}")[-350:]
+            finally:
+                c.close()
+        threading.Thread(target=self._run_per_router, args=("Aktualizace všech routerů", worker, "Aktualizace"), daemon=True).start()
+        return True
+
+    @staticmethod
+    def led_script(mode: str) -> str:
+        if mode not in {"on", "off"}:
+            raise ValueError("Neplatný LED režim")
+        value = "0" if mode == "off" else "MAX"
         return f'''set -e
-MODE={quoted_mode}
+MODE={shlex.quote(mode)}
+for led in /sys/class/leds/*; do
+  [ -d "$led" ] || continue
+  [ -w "$led/trigger" ] && echo none > "$led/trigger" 2>/dev/null || true
+  if [ "$MODE" = off ]; then
+    [ -w "$led/brightness" ] && echo 0 > "$led/brightness" 2>/dev/null || true
+  else
+    max=$(cat "$led/max_brightness" 2>/dev/null || echo 1)
+    [ -w "$led/brightness" ] && echo "$max" > "$led/brightness" 2>/dev/null || true
+  fi
+done
+mkdir -p /etc
 cat > /etc/init.d/mesh-led-mode <<'EOS'
 #!/bin/sh /etc/rc.common
 START=99
-STOP=01
 apply_mode() {{
-    mode=$(cat /etc/mesh_led_mode 2>/dev/null || echo default)
-    case "$mode" in
-        off) for led in /sys/class/leds/*; do [ -d "$led" ] || continue; [ -w "$led/trigger" ] && echo none > "$led/trigger" 2>/dev/null || true; [ -w "$led/brightness" ] && echo 0 > "$led/brightness" 2>/dev/null || true; done ;;
-        on) for led in /sys/class/leds/*; do [ -d "$led" ] || continue; [ -w "$led/trigger" ] && echo none > "$led/trigger" 2>/dev/null || true; max=$(cat "$led/max_brightness" 2>/dev/null || echo 1); [ -w "$led/brightness" ] && echo "$max" > "$led/brightness" 2>/dev/null || true; done ;;
-        default|*) [ -x /etc/init.d/led ] && /etc/init.d/led restart 2>/dev/null || true ;;
-    esac
+  MODE=$(cat /etc/mesh_led_mode 2>/dev/null || echo off)
+  for led in /sys/class/leds/*; do
+    [ -d "$led" ] || continue
+    [ -w "$led/trigger" ] && echo none > "$led/trigger" 2>/dev/null || true
+    if [ "$MODE" = off ]; then
+      [ -w "$led/brightness" ] && echo 0 > "$led/brightness" 2>/dev/null || true
+    else
+      max=$(cat "$led/max_brightness" 2>/dev/null || echo 1)
+      [ -w "$led/brightness" ] && echo "$max" > "$led/brightness" 2>/dev/null || true
+    fi
+  done
 }}
 start() {{ apply_mode; }}
 boot() {{ sleep 8; apply_mode; }}
@@ -938,90 +454,138 @@ reload() {{ apply_mode; }}
 EOS
 chmod 0755 /etc/init.d/mesh-led-mode
 printf '%s\n' "$MODE" > /etc/mesh_led_mode
-touch /etc/sysupgrade.conf
-grep -qxF '/etc/init.d/mesh-led-mode' /etc/sysupgrade.conf 2>/dev/null || echo '/etc/init.d/mesh-led-mode' >> /etc/sysupgrade.conf
-grep -qxF '/etc/mesh_led_mode' /etc/sysupgrade.conf 2>/dev/null || echo '/etc/mesh_led_mode' >> /etc/sysupgrade.conf
-/etc/init.d/mesh-led-mode enable
-/etc/init.d/mesh-led-mode restart
-echo "LED_MODE=$MODE"
+/etc/init.d/mesh-led-mode enable 2>/dev/null || true
+/etc/init.d/mesh-led-mode restart 2>/dev/null || true
+echo LED_OK
 '''
 
-    def led_mode(self, mode: str, targets: Optional[List[str]] = None, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
-        if mode not in {"off", "on", "default"}:
-            raise ValueError("Neplatný LED režim")
-        targets = targets or [r["ip"] for r in self.routers]
-        success = failed = 0
-        details = []
-        total = max(1, len(targets))
-        if progress:
-            progress(0, f"Nastavuji LED režim '{mode}'…", None, None, None)
-        for index, ip in enumerate(targets, start=1):
-            ssh = None
-            if progress:
-                progress(int((index - 1) * 100 / total), f"{ip} – nastavuji LED {mode}…", ip, "running", "Zapisuji trvalý LED režim.")
+    def start_led(self, mode: str, target: str = "all") -> bool:
+        if mode not in {"on", "off"} or self.operation.snapshot()["running"]:
+            return False
+        routers = self.routers if target == "all" else [r for r in self.routers if r["ip"] == target]
+        if not routers:
+            return False
+        def run() -> None:
+            if not self.operation.start(f"LED {'ON' if mode == 'on' else 'OFF'}", routers):
+                return
+            total = len(routers); okc = 0
+            for i, r in enumerate(routers):
+                ip = r["ip"]
+                self.operation.update(percent=int(i*100/total), current=f"{r['name']} ({ip})…", ip=ip, state="PROBÍHÁ")
+                c = None
+                try:
+                    c = self.ssh_client(ip, 5)
+                    out, err, code = self.script(c, self.led_script(mode), 30)
+                    ok = code == 0 and "LED_OK" in out
+                    detail = "nastaveno" if ok else (err or out or str(code))[-250:]
+                except Exception as exc:
+                    ok, detail = False, str(exc)
+                finally:
+                    if c: c.close()
+                if ok: okc += 1
+                self.operation.update(ip=ip, state="HOTOVO" if ok else "CHYBA", detail=detail, log=f"{r['name']}: {detail}", percent=int((i+1)*100/total))
+            self.operation.finish(f"LED {'ON' if mode == 'on' else 'OFF'}: {okc}/{total} OK")
+        threading.Thread(target=run, daemon=True).start()
+        return True
+
+    def start_backup(self) -> bool:
+        if self.operation.snapshot()["running"]:
+            return False
+        threading.Thread(target=self._backup_worker, daemon=True).start()
+        return True
+
+    def _backup_worker(self) -> None:
+        if not self.operation.start("Záloha konfigurace OpenWrt", self.routers):
+            return
+        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        set_dir = BACKUP_DIR / timestamp
+        set_dir.mkdir(parents=True, exist_ok=True)
+        total = len(self.routers)
+        success = 0
+        manifest = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "files": []}
+        for i, router in enumerate(self.routers):
+            ip, name = router["ip"], router["name"]
+            filename = router.get("backup_name") or f"{name}.tar.gz"
+            remote = f"/tmp/{filename}"
+            local = set_dir / filename
+            self.operation.update(percent=int(i * 100 / total), current=f"Zálohuji {name} ({ip})…", ip=ip, state="PROBÍHÁ", log=f"{name}: vytvářím standardní sysupgrade archiv")
+            client = None
             try:
-                ssh = self.make_ssh_client(ip, timeout=6)
-                out, err, code = self.ssh_script(ssh, self.make_persistent_led_script(mode), timeout=30)
-                ok = code == 0 and f"LED_MODE={mode}" in out
-                success += int(ok)
-                failed += int(not ok)
-                detail = (err or out).strip()
-                details.append({"ip": ip, "ok": ok, "detail": detail})
-                if progress:
-                    progress(int(index * 100 / total), f"{ip} – LED {'nastaveno' if ok else 'chyba'}.", ip, "done" if ok else "error", detail[-400:] or ("OK" if ok else "Neznámá chyba"))
+                client = self.ssh_client(ip, 7)
+                out, err, code = self.command(client, f"umask 077; rm -f {shlex.quote(remote)}; sysupgrade -b {shlex.quote(remote)}; test -s {shlex.quote(remote)}", 120)
+                if code != 0:
+                    raise RuntimeError((err or out or f"sysupgrade exit {code}").strip())
+                sftp = client.open_sftp()
+                try:
+                    sftp.get(remote, str(local))
+                finally:
+                    sftp.close()
+                self.command(client, f"rm -f {shlex.quote(remote)}", 10)
+                if not local.exists() or local.stat().st_size < 100:
+                    raise RuntimeError("Stažený archiv je prázdný nebo neúplný")
+                success += 1
+                manifest["files"].append({"ip": ip, "name": name, "file": filename, "size": local.stat().st_size, "ok": True})
+                self.operation.update(ip=ip, state="HOTOVO", detail=filename, log=f"{name}: {filename} uložen ({local.stat().st_size} B)")
             except Exception as exc:
-                failed += 1
-                details.append({"ip": ip, "ok": False, "detail": str(exc)})
-                if progress:
-                    progress(int(index * 100 / total), f"{ip} – LED chyba.", ip, "error", str(exc))
+                manifest["files"].append({"ip": ip, "name": name, "file": filename, "ok": False, "error": str(exc)})
+                self.operation.update(ip=ip, state="CHYBA", detail=str(exc), log=f"{name}: CHYBA – {exc}")
             finally:
-                if ssh is not None:
-                    ssh.close()
-        if progress:
-            progress(100, f"LED dokončeno – úspěch {success}, chyba {failed}.", None, None, None)
-        return {"ok": failed == 0, "success": success, "failed": failed, "details": details}
+                if client:
+                    client.close()
+            self.operation.update(percent=int((i + 1) * 100 / total))
+        (set_dir / "backup_info.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.operation.finish(f"Záloha dokončena: {success}/{total} uzlů")
 
-    @staticmethod
-    def make_package_update_script() -> str:
-        return r'''set -e
-if command -v apk >/dev/null 2>&1; then echo 'PACKAGE_MANAGER=apk'; apk update; apk upgrade
-elif command -v opkg >/dev/null 2>&1; then echo 'PACKAGE_MANAGER=opkg'; opkg update; UPGRADABLE=$(opkg list-upgradable | awk '{print $1}'); if [ -n "$UPGRADABLE" ]; then opkg upgrade $UPGRADABLE; else echo 'Žádné aktualizace.'; fi
-else echo 'Nenalezen apk ani opkg.' >&2; exit 127; fi
-echo 'UPDATE_OK'
-'''
+    def list_backups(self) -> List[Dict[str, Any]]:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        result: List[Dict[str, Any]] = []
+        for d in sorted([p for p in BACKUP_DIR.iterdir() if p.is_dir()], reverse=True):
+            info_file = d / "backup_info.json"
+            info: Dict[str, Any] = {}
+            if info_file.exists():
+                try: info = json.loads(info_file.read_text(encoding="utf-8"))
+                except Exception: info = {}
+            files = []
+            for f in sorted(d.glob("*.tar.gz")):
+                files.append({"name": f.name, "size": f.stat().st_size})
+            created = info.get("created") or d.name.replace("_", " ")
+            result.append({"id": d.name, "created": created, "count": len(files), "files": files})
+        return result
 
-    def update_all(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
-        success = failed = 0
-        details = []
-        total = max(1, len(self.routers))
-        if progress:
-            progress(0, "Zahajuji aktualizaci balíčků všech routerů…", None, None, None)
-        for index, router in enumerate(self.routers, start=1):
-            ip = router["ip"]
-            ssh = None
-            start_percent = int((index - 1) * 100 / total)
-            end_percent = int(index * 100 / total)
-            if progress:
-                progress(start_percent, f"{ip} – připojuji se a aktualizuji balíčky…", ip, "running", "Probíhá apk/opkg update a upgrade. Může to několik minut trvat.")
-            try:
-                ssh = self.make_ssh_client(ip, timeout=8)
-                out, err, code = self.ssh_script(ssh, self.make_package_update_script(), timeout=180)
-                ok = code == 0 and "UPDATE_OK" in out
-                success += int(ok)
-                failed += int(not ok)
-                detail = (err or out).strip()[-3000:]
-                details.append({"ip": ip, "ok": ok, "detail": detail})
-                if progress:
-                    progress(end_percent, f"{ip} – aktualizace {'hotová' if ok else 'skončila chybou'}.", ip, "done" if ok else "error", detail[-600:] or ("UPDATE_OK" if ok else "Aktualizace selhala"))
-            except Exception as exc:
-                failed += 1
-                details.append({"ip": ip, "ok": False, "detail": str(exc)})
-                if progress:
-                    progress(end_percent, f"{ip} – aktualizace selhala.", ip, "error", str(exc))
-            finally:
-                if ssh is not None:
-                    ssh.close()
-        if progress:
-            progress(100, f"Aktualizace dokončena – úspěch {success}, chyba {failed}.", None, None, None)
-        return {"ok": failed == 0, "success": success, "failed": failed, "details": details}
+    def backup_file(self, set_id: str, filename: str) -> Optional[Path]:
+        if not re.fullmatch(r"[0-9_-]+", set_id):
+            return None
+        if filename not in {r.get("backup_name") for r in self.routers}:
+            return None
+        p = (BACKUP_DIR / set_id / filename).resolve()
+        base = (BACKUP_DIR / set_id).resolve()
+        if base not in p.parents or not p.is_file():
+            return None
+        return p
 
+    def build_backup_zip(self, set_id: str) -> Optional[Path]:
+        if not re.fullmatch(r"[0-9_-]+", set_id):
+            return None
+        d = (BACKUP_DIR / set_id).resolve()
+        if not d.is_dir() or BACKUP_DIR.resolve() not in d.parents:
+            return None
+        zip_path = DATA_DIR / f"BACKUP_{set_id}.zip"
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            for f in sorted(d.iterdir()):
+                if f.is_file():
+                    z.write(f, arcname=f.name)
+        return zip_path
+
+    def delete_backup(self, set_id: str) -> bool:
+        if not re.fullmatch(r"[0-9_-]+", set_id):
+            return False
+        d = (BACKUP_DIR / set_id).resolve()
+        if not d.is_dir() or BACKUP_DIR.resolve() not in d.parents:
+            return False
+        for p in d.iterdir():
+            if p.is_file(): p.unlink()
+        d.rmdir()
+        return True
+
+
+controller = MeshController()

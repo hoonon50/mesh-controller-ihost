@@ -2,106 +2,79 @@
 <html lang="cs">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>OpenWrt Mesh Controller PRO WEB</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenWrt Mesh Controller PRO v3.3</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header>
   <div>
-    <h1>OpenWrt Mesh Controller PRO <span>WEB v3.2</span></h1>
-    <p id="lastRefresh">Načítám…</p>
+    <h1>OpenWrt Mesh Controller PRO <span>v3.3</span></h1>
+    <p>SONOFF iHost · 192.168.30.0/24</p>
   </div>
-  <button class="primary opAction" onclick="startOperation('/api/refresh',null,null)">OBNOVIT STAV</button>
+  <button id="refreshBtn" class="secondary">Obnovit stav</button>
 </header>
 
-<section class="metrics" id="metrics"></section>
-
 <main>
-  <section class="leftcol">
-    <div class="card topologyCard">
-      <div class="cardhead">
-        <h2>Živá mesh topologie</h2>
-        <span>skutečné 802.11s spoje · RSSI · stav uzlů</span>
-      </div>
-      <svg id="meshMap" viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid meet"></svg>
-    </div>
+  <section class="metrics" id="metrics"></section>
 
-    <div class="card">
-      <div class="cardhead">
-        <h2>Klienti</h2>
-        <input id="search" placeholder="Hledat IP, MAC, zařízení…" oninput="renderClients()">
+  <section class="grid-main">
+    <article class="card topology-card">
+      <div class="card-head">
+        <div><h2>Živá topologie</h2><p>U spojů se zobrazuje pouze dBm · rychlost · MHz</p></div>
+        <div class="legend"><i class="good"></i> dobrý <i class="mid"></i> střední <i class="bad"></i> slabý</div>
       </div>
-      <div class="tabs">
-        <button onclick="setFilter('Vše')">Vše</button>
-        <button onclick="setFilter('Wi-Fi')">Wi‑Fi</button>
-        <button onclick="setFilter('LAN')">LAN</button>
-        <button onclick="setFilter('Neurčené')">Neurčené</button>
+      <div id="topology" class="topology">
+        <svg id="linkLayer"></svg>
+        <div id="nodeLayer"></div>
+        <div id="linkLabels"></div>
       </div>
-      <div class="tablewrap">
-        <table>
-          <thead><tr><th>Uzel</th><th>Typ</th><th>Zařízení</th><th>IP</th><th>MAC</th><th>Port</th><th>Detail</th></tr></thead>
-          <tbody id="clientsBody"></tbody>
-        </table>
-      </div>
-    </div>
+    </article>
+
+    <article class="card operation-card">
+      <div class="card-head"><div><h2>Průběh operace</h2><p id="opCurrent">Připraveno</p></div><strong id="opPercent">0 %</strong></div>
+      <div class="progress"><div id="progressBar"></div></div>
+      <div id="opNodes" class="op-nodes"></div>
+      <div class="op-meta"><span id="opTime">Čas: 00:00</span><span id="opResult"></span></div>
+      <div id="opLog" class="op-log"></div>
+    </article>
   </section>
 
-  <aside>
-    <div class="card">
-      <div class="cardhead"><h2>LAN porty</h2></div>
-      <div id="ports"></div>
-    </div>
-
-    <div class="card">
-      <div class="cardhead"><h2>Údržba</h2><span>bez SAFE MESH</span></div>
+  <section class="grid-bottom">
+    <article class="card">
+      <div class="card-head"><div><h2>Údržba</h2><p>Akce se spustí okamžitě a průběh je vidět nahoře.</p></div></div>
       <div class="actions">
-        <button class="opAction" onclick="startOperation('/api/ping')">PING 5 UZLŮ</button>
-        <button class="opAction" onclick="startOperation('/api/active-scan')">AKTIVNĚ VYHLEDAT</button>
-        <button class="opAction" onclick="startOperation('/api/backup')">ZÁLOHOVAT</button>
-        <button onclick="maintenance()">STAV HLAVNÍHO UZLU</button>
-        <button class="opAction" onclick="startLed('off')">LED TRVALE OFF</button>
-        <button class="opAction" onclick="startLed('on')">LED TRVALE ON</button>
-        <button class="opAction" onclick="startLed('default')">LED VÝCHOZÍ</button>
-        <button class="danger opAction" onclick="startOperation('/api/update',null,'Opravdu aktualizovat balíčky na všech 5 routerech?')">AKTUALIZOVAT BALÍČKY</button>
-        <button class="danger opAction" onclick="startOperation('/api/reboot',null,'Opravdu restartovat všech 5 routerů?')">RESTART 5 ROUTERŮ</button>
+        <button data-action="ping">PING 5 UZLŮ</button>
+        <button data-action="update" class="warn">AKTUALIZOVAT VŠECH 5 UZLŮ</button>
       </div>
-      <pre id="maintenanceBox">Stav nebyl načten.</pre>
-    </div>
-
-    <div class="card operationCard" id="operationCard">
-      <div class="cardhead">
-        <div>
-          <h2>Průběh operace</h2>
-          <span id="operationStatusText">Připraveno</span>
-        </div>
-        <div class="operationHeadRight">
-          <strong id="operationPercent">0 %</strong>
-          <span id="operationElapsed">00:00</span>
-        </div>
+      <div class="led-row">
+        <label for="ledTarget">LED cíl</label>
+        <select id="ledTarget">
+          <option value="all">Všechny uzly</option>
+          {% for r in routers %}<option value="{{ r.ip }}">{{ r.name }} · {{ r.ip }}</option>{% endfor %}
+        </select>
+        <button data-action="led_on" class="good-btn">LED ON</button>
+        <button data-action="led_off" class="danger">LED OFF</button>
       </div>
+    </article>
 
-      <div class="operationBody">
-        <div class="progressTrack" aria-label="Průběh operace">
-          <div class="progressBar" id="operationBar"></div>
-        </div>
-        <div class="operationMessage" id="operationMessage">Žádná operace neběží.</div>
-        <div class="nodeProgress" id="operationNodes"></div>
-        <div class="operationLogTitle">Živý průběh</div>
-        <pre id="operationLog">Připraveno.</pre>
-        <button class="smallButton" id="clearOperationButton" onclick="clearOperation()">VYČISTIT PRŮBĚH</button>
+    <article class="card backups-card">
+      <div class="card-head">
+        <div><h2>Zálohy konfigurace</h2><p>Standardní OpenWrt sysupgrade .tar.gz, trvale uložené v /data.</p></div>
+        <button data-action="backup" class="good-btn">VYTVOŘIT NOVOU ZÁLOHU</button>
       </div>
-    </div>
+      <div class="backup-name-map">
+        ROUTER.tar.gz → 192.168.30.1 · MESH1.tar.gz → .2 · MESH2.tar.gz → .3 · MESH3.tar.gz → .4 · MESH4.tar.gz → .5
+      </div>
+      <div id="backupList" class="backup-list"></div>
+    </article>
+  </section>
 
-    <div class="card">
-      <div class="cardhead"><h2>Diagnostický log</h2><span>/data/mesh-controller.log</span></div>
-      <pre id="logBox"></pre>
-    </div>
-  </aside>
+  <section class="card clients-card">
+    <div class="card-head"><div><h2>Klienti</h2><p>Aktuálně známá zařízení z br-lan jednotlivých uzlů.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Uzel</th><th>IP</th><th>MAC</th><th>Typ</th></tr></thead><tbody id="clientsBody"></tbody></table></div>
+  </section>
 </main>
-
-<div id="toast"></div>
-<script>window.REFRESH_SECONDS={{ refresh_seconds|int }};</script>
 <script src="/static/app.js"></script>
 </body>
 </html>

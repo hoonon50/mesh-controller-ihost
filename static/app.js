@@ -1,180 +1,63 @@
-let data={summary:{},nodes:{},links:[],clients:[],routers:[]};
-let filter='Vše';
-let operation={status:'idle',progress:0,nodes:{},logs:[]};
-const $=id=>document.getElementById(id);
-
-function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function toast(msg,bad=false){let t=$('toast');t.textContent=typeof msg==='string'?msg:JSON.stringify(msg,null,2);t.style.display='block';t.style.borderColor=bad?'#ff4d5e':'#353540';setTimeout(()=>t.style.display='none',6500)}
-function metric(title,val){return `<div class="metric"><small>${title}</small><strong>${val}</strong></div>`}
-function formatElapsed(sec){sec=Math.max(0,Number(sec)||0);let m=Math.floor(sec/60),s=sec%60;return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`}
-
-async function fetchStatus(){
-  try{
-    let r=await fetch('/api/status');
-    data=await r.json();
-    render();
-  }catch(e){toast('Nelze načíst stav: '+e,true)}
+const POS={
+  "192.168.30.1":[50,50],
+  "192.168.30.2":[15,18],
+  "192.168.30.3":[85,18],
+  "192.168.30.4":[85,82],
+  "192.168.30.5":[15,82]
+};
+let lastStatus={nodes:[],links:[],clients:[]};
+const $=s=>document.querySelector(s);
+const $$=s=>[...document.querySelectorAll(s)];
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+async function jfetch(url,opt={}){const r=await fetch(url,opt);if(!r.ok)throw new Error(await r.text());return r.json();}
+function metric(title,value){return `<div class="metric"><small>${title}</small><strong>${value}</strong></div>`}
+function renderStatus(s){
+  lastStatus=s;
+  const online=s.nodes.filter(n=>n.online).length;
+  $('#metrics').innerHTML=metric('ONLINE UZLY',`${online} / ${s.nodes.length||5}`)+metric('MESH SPOJE',s.links.length)+metric('KLIENTI',s.clients.length)+metric('ZÁLOHY','/data')+metric('OBNOVENO',s.updated?new Date(s.updated*1000).toLocaleTimeString('cs-CZ'):'—');
+  renderTopology(s); renderClients(s.clients||[]);
 }
-
-function render(){
-  let s=data.summary||{};
-  $('metrics').innerHTML=
-    metric('ONLINE UZLY',`${s.online||0} / ${s.total_nodes||5}`)+
-    metric('KLIENTI',s.clients||0)+
-    metric('WI‑FI',s.wifi||0)+
-    metric('LAN POTVRZ.',s.lan||0)+
-    metric('NEURČENÉ',s.unknown||0)+
-    metric('MESH SPOJE',s.mesh_links||0)+
-    metric('DHCP LEASES',s.leases||0);
-  $('lastRefresh').textContent='Poslední načtení: '+(s.last_refresh||'zatím neproběhlo');
-  renderMap();renderClients();renderPorts();
-}
-
-function setFilter(v){filter=v;renderClients()}
-
-function renderClients(){
-  let q=($('search')?.value||'').toLowerCase();
-  let rows=(data.clients||[]).filter(c=>(filter==='Vše'||c.connection_type===filter)&&JSON.stringify(c).toLowerCase().includes(q));
-  $('clientsBody').innerHTML=rows.map(c=>{
-    let cls=c.connection_type==='Wi-Fi'?'wifi':c.connection_type==='LAN'?'lan':'unknown';
-    let detail=c.connection_type==='Wi-Fi'?`${c.band||''} · ${c.signal??'?'} dBm · ${c.tx_bitrate||''}`:`${c.link_speed||''} · ${c.detection_source||''}`;
-    return `<tr><td>${esc(c.node_ip.split('.').pop())}</td><td class="${cls}">${esc(c.connection_type)}</td><td>${esc(c.hostname||'—')}</td><td>${esc(c.ip||'—')}</td><td>${esc(c.mac)}</td><td>${esc(c.port||c.interface||'—')}</td><td>${esc(detail)}</td></tr>`
-  }).join('')||'<tr><td colspan="7">Žádní klienti.</td></tr>';
-}
-
-function positions(){
-  return {
-    '192.168.30.1':[500,310],
-    '192.168.30.2':[130,100],
-    '192.168.30.3':[870,100],
-    '192.168.30.4':[870,520],
-    '192.168.30.5':[130,520]
-  };
-}
-function linkColor(sig){if(sig==null)return '#778';if(sig>=-60)return '#00d86f';if(sig>=-72)return '#f4b942';return '#ff4d5e'}
-
-function renderMap(){
-  let p=positions(),svg=$('meshMap'),links='',nodes='';
-  for(let l of(data.links||[])){
-    let a=p[l.a_ip],b=p[l.b_ip];if(!a||!b)continue;
-    let mx=(a[0]+b[0])/2,my=(a[1]+b[1])/2;
-    links+=`<line class="link" x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${linkColor(l.signal)}"/>`+
-      `<rect class="linkLabelBg" x="${mx-66}" y="${my-15}" width="132" height="28" rx="9"/>`+
-      `<text class="linkLabel" x="${mx}" y="${my+4}" text-anchor="middle">${esc(l.label||'mesh')}</text>`;
+function linkColor(dbm){if(dbm==null)return '#5c6572';return dbm>=-60?'#31d17c':dbm>=-72?'#f0b84b':'#ff5d6c'}
+function renderTopology(s){
+  const topo=$('#topology'), svg=$('#linkLayer'), nl=$('#nodeLayer'), ll=$('#linkLabels');
+  const rect=topo.getBoundingClientRect(), W=rect.width,H=rect.height;
+  svg.innerHTML='';nl.innerHTML='';ll.innerHTML='';
+  const nodeByIp=Object.fromEntries((s.nodes||[]).map(n=>[n.ip,n]));
+  for(const link of (s.links||[])){
+    const pa=POS[link.a],pb=POS[link.b]; if(!pa||!pb)continue;
+    const x1=W*pa[0]/100,y1=H*pa[1]/100,x2=W*pb[0]/100,y2=H*pb[1]/100;
+    const line=document.createElementNS('http://www.w3.org/2000/svg','line');
+    line.setAttribute('x1',x1);line.setAttribute('y1',y1);line.setAttribute('x2',x2);line.setAttribute('y2',y2);line.setAttribute('stroke',linkColor(link.dbm));line.setAttribute('stroke-width','4');line.setAttribute('stroke-linecap','round');svg.appendChild(line);
+    // štítek schválně není uprostřed spoje: 32 % od uzlu A + kolmý odsazení
+    const t=.32, bx=x1+(x2-x1)*t, by=y1+(y2-y1)*t, dx=x2-x1,dy=y2-y1,len=Math.hypot(dx,dy)||1;
+    const x=bx+(-dy/len)*18,y=by+(dx/len)*18;
+    const parts=[]; if(link.dbm!=null)parts.push(`${link.dbm} dBm`); if(link.speed_mbps!=null)parts.push(`${Number(link.speed_mbps).toFixed(link.speed_mbps%1?1:0)} Mbit/s`); if(link.mhz!=null)parts.push(`${link.mhz} MHz`);
+    const d=document.createElement('div');d.className='link-label';d.style.left=`${x}px`;d.style.top=`${y}px`;d.style.borderColor=linkColor(link.dbm);d.textContent=parts.join(' · ')||'mesh';ll.appendChild(d);
   }
-  for(let r of(data.routers||[])){
-    let [x,y]=p[r.ip]||[50,50],n=data.nodes?.[r.ip],on=!!n?.online,nodeNo=esc(r.ip.split('.').pop());
-    nodes+=`<g class="nodeGroup">`+
-      `<rect class="nodeCard" x="${x-84}" y="${y-50}" width="168" height="100" rx="20" stroke="${on?'#00d86f':'#ff4d5e'}"/>`+
-      `<circle class="statusDot" cx="${x-61}" cy="${y-27}" r="6" fill="${on?'#00d86f':'#ff4d5e'}"/>`+
-      `<path class="wifiArc" d="M ${x+38} ${y-25} q 17 -15 34 0 M ${x+45} ${y-17} q 10 -9 20 0 M ${x+54} ${y-9} q 1 -1 2 0"/>`+
-      `<text class="nodeTitle" x="${x}" y="${y-10}" text-anchor="middle">UZEL .${nodeNo}</text>`+
-      `<text class="nodeSub" x="${x}" y="${y+12}" text-anchor="middle">${esc(n?.hostname||r.name)}</text>`+
-      `<text class="nodeSub" x="${x}" y="${y+31}" text-anchor="middle">${on?esc(n.uptime||'online'):'OFFLINE'}</text>`+
-      `</g>`;
+  for(const [ip,pos] of Object.entries(POS)){
+    const n=nodeByIp[ip]||{ip,name:ip,online:false,clients:0};const d=document.createElement('div');d.className=`node ${n.online?'online':'offline'}`;d.style.left=`${pos[0]}%`;d.style.top=`${pos[1]}%`;d.innerHTML=`<b>${esc(n.name)}</b><small>${esc(ip)}</small><div class="state">${n.online?'ONLINE':'OFFLINE'} · ${n.clients||0} klientů</div>`;nl.appendChild(d);
   }
-  svg.innerHTML=links+nodes;
 }
-
-function renderPorts(){
-  let rows=[];
-  for(let [ip,n] of Object.entries(data.nodes||{})){
-    for(let p of(n.lan_ports||[])){
-      let state=p.carrier||p.operstate==='up'||(p.client_macs||[]).length?'UP':'DOWN';
-      rows.push(`<div class="portrow"><b>.${esc(ip.split('.').pop())}</b><span class="${p.is_uplink?'uplink':''}">${esc(p.port)}${p.is_uplink?' (uplink)':''}</span><span class="${state==='UP'?'up':'down'}">${state}</span><span>${esc(p.speed||'—')}</span></div>`)
-    }
-  }
-  $('ports').innerHTML=rows.join('')||'<span class="muted">Porty zatím nenačteny.</span>';
+function renderClients(clients){$('#clientsBody').innerHTML=clients.length?clients.map(c=>`<tr><td>${esc(c.node)}</td><td>${esc(c.ip)}</td><td>${esc(c.mac)}</td><td>${esc(c.type)}</td></tr>`).join(''):`<tr><td colspan="4" style="color:var(--muted)">Žádní klienti nejsou právě v tabulce sousedů.</td></tr>`}
+async function loadStatus(){try{renderStatus(await jfetch('/api/status'))}catch(e){console.error(e)}}
+function stateClass(s){return s==='HOTOVO'?'state-ok':s==='CHYBA'?'state-err':s==='PROBÍHÁ'?'state-run':'state-wait'}
+async function loadOperation(){
+  try{const o=await jfetch('/api/operation');$('#opPercent').textContent=`${o.percent||0} %`;$('#progressBar').style.width=`${o.percent||0}%`;$('#opCurrent').textContent=o.current||'Připraveno';$('#opResult').textContent=o.result||'';const sec=o.elapsed||0;$('#opTime').textContent=`Čas: ${String(Math.floor(sec/60)).padStart(2,'0')}:${String(sec%60).padStart(2,'0')}`;
+    $('#opNodes').innerHTML=Object.entries(o.nodes||{}).map(([ip,n])=>`<div class="op-node"><b>${esc(n.name)}</b><small>${esc(n.detail||ip)}</small><strong class="${stateClass(n.state)}">${esc(n.state)}</strong></div>`).join('');$('#opLog').textContent=(o.log||[]).join('\n');$('#opLog').scrollTop=$('#opLog').scrollHeight;$$('[data-action]').forEach(b=>b.disabled=!!o.running);
+    if(!o.running && o.finished){loadBackups();loadStatus();}
+  }catch(e){console.error(e)}
 }
-
-async function post(url,payload){
-  let r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:payload?JSON.stringify(payload):'{}'});
-  let j=await r.json();
-  if(!r.ok||j.ok===false)throw new Error(j.error||'Operace selhala');
-  return j;
+async function runAction(name){
+  const body=(name==='led_on'||name==='led_off')?{target:$('#ledTarget').value}:{};
+  try{await jfetch(`/api/action/${name}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});loadOperation()}catch(e){console.error(e)}
 }
-
-async function startOperation(url,payload=null,question=null){
-  if(question&&!confirm(question))return;
-  try{
-    let j=await post(url,payload||{});
-    operation=j.operation||operation;
-    renderOperation();
-    toast('Operace spuštěna. Průběh vidíš v panelu Průběh operace.');
-    pollOperation();
-  }catch(e){toast(e.message,true)}
+async function loadBackups(){
+  try{const sets=await jfetch('/api/backups');const box=$('#backupList');if(!sets.length){box.innerHTML='<div style="color:var(--muted);padding:8px 0">Zatím není vytvořená žádná záloha.</div>';return}
+    box.innerHTML=sets.map(s=>`<div class="backup-set"><div class="backup-main"><strong>${esc(s.created)}</strong><span>${s.count}/5 souborů</span><a class="mini good-btn" href="/api/backups/${encodeURIComponent(s.id)}.zip">STÁHNOUT ZIP</a><button class="mini danger" onclick="deleteBackup('${esc(s.id)}')">SMAZAT</button></div><div class="backup-files">${s.files.map(f=>`<a href="/api/backups/${encodeURIComponent(s.id)}/${encodeURIComponent(f.name)}">${esc(f.name)} · ${(f.size/1024).toFixed(0)} kB</a>`).join('')}</div></div>`).join('');
+  }catch(e){console.error(e)}
 }
-
-async function startLed(mode){
-  if(!confirm(`Nastavit LED režim '${mode}' na všech uzlech?`))return;
-  return startOperation('/api/led',{mode});
-}
-
-async function maintenance(){
-  try{
-    let r=await fetch('/api/maintenance');let j=await r.json();
-    $('maintenanceBox').textContent=JSON.stringify(j,null,2);
-  }catch(e){$('maintenanceBox').textContent=e.message}
-}
-
-function nodeStatusLabel(status){
-  return {
-    queued:['○','ČEKÁ'],running:['●','PROBÍHÁ'],done:['✓','HOTOVO'],error:['✕','CHYBA']
-  }[status]||['○',String(status||'ČEKÁ').toUpperCase()];
-}
-
-function renderOperation(){
-  let o=operation||{},running=o.status==='running';
-  let percent=Math.max(0,Math.min(100,Number(o.progress)||0));
-  $('operationStatusText').textContent=o.title||'Připraveno';
-  $('operationPercent').textContent=`${percent} %`;
-  $('operationElapsed').textContent=formatElapsed(o.elapsed_seconds||0);
-  $('operationBar').style.width=`${percent}%`;
-  $('operationBar').className='progressBar '+(o.status||'idle');
-  $('operationMessage').textContent=o.message||'Žádná operace neběží.';
-  $('operationCard').dataset.status=o.status||'idle';
-
-  let routers=data.routers||[];
-  let nodes=o.nodes||{};
-  let rows=[];
-  for(let r of routers){
-    let n=nodes[r.ip];
-    if(!n&&o.status==='idle')continue;
-    n=n||{status:'queued',detail:'Čeká na spuštění.'};
-    let [icon,label]=nodeStatusLabel(n.status);
-    rows.push(`<div class="nodeOpRow ${esc(n.status)}"><div class="nodeOpIp">.${esc(r.ip.split('.').pop())}</div><div class="nodeOpName"><b>${esc(r.name)}</b><small>${esc(n.detail||'')}</small></div><div class="nodeOpStatus"><span>${icon}</span> ${label}</div></div>`);
-  }
-  $('operationNodes').innerHTML=rows.join('')||(o.status==='idle'?'<div class="operationEmpty">Po spuštění operace se zde zobrazí stav jednotlivých routerů.</div>':'');
-  $('operationLog').textContent=(o.logs||[]).join('\n')||'Připraveno.';
-  $('operationLog').scrollTop=$('operationLog').scrollHeight;
-  $('clearOperationButton').disabled=running||o.status==='idle';
-  document.querySelectorAll('.opAction').forEach(btn=>btn.disabled=running);
-}
-
-async function pollOperation(){
-  try{
-    let r=await fetch('/api/operation');
-    operation=await r.json();
-    renderOperation();
-    if(operation.status==='done'||operation.status==='error'){
-      await fetchStatus();loadLogs();
-    }
-  }catch(e){}
-}
-
-async function clearOperation(){
-  try{await post('/api/operation/clear',{});await pollOperation()}catch(e){toast(e.message,true)}
-}
-
-async function loadLogs(){
-  try{
-    let r=await fetch('/api/logs?limit=300');let j=await r.json();
-    $('logBox').textContent=(j.logs||[]).join('\n');
-    $('logBox').scrollTop=$('logBox').scrollHeight;
-  }catch(e){}
-}
-
-fetchStatus();pollOperation();loadLogs();
-setInterval(fetchStatus,Math.max(15,window.REFRESH_SECONDS||30)*1000);
-setInterval(pollOperation,1000);
-setInterval(loadLogs,5000);
+async function deleteBackup(id){if(!confirm('Opravdu smazat tuto sadu záloh?'))return;await fetch(`/api/backups/${encodeURIComponent(id)}`,{method:'DELETE'});loadBackups()}
+$$('[data-action]').forEach(b=>b.addEventListener('click',()=>runAction(b.dataset.action)));
+$('#refreshBtn').addEventListener('click',async()=>{await fetch('/api/refresh',{method:'POST'});setTimeout(loadStatus,1200)});
+window.addEventListener('resize',()=>renderTopology(lastStatus));
+loadStatus();loadOperation();loadBackups();setInterval(loadOperation,1000);setInterval(loadStatus,30000);setInterval(loadBackups,15000);

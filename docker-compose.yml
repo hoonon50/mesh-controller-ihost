@@ -1,14 +1,10 @@
 services:
   mesh-controller:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: mesh-controller-pro:3.0
-    container_name: mesh-controller-pro
+    build: .
+    image: mesh-controller-ihost:3.3
     network_mode: host
     restart: unless-stopped
     volumes:
-      - mesh_controller_data:/data
-
+      - mesh-controller-data:/data
 volumes:
-  mesh_controller_data:
+  mesh-controller-data:

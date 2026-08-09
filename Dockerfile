@@ -1,19 +1,12 @@
-FROM arm32v7/debian:bookworm-slim
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONDONTWRITEBYTECODE=1 \
+FROM python:3.11-slim-bookworm
+ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    MESH_DATA_DIR=/data
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-flask python3-paramiko iputils-ping ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
+    DATA_DIR=/data \
+    PORT=8088
 WORKDIR /app
-COPY app.py mesh_core.py /app/
-COPY templates /app/templates
-COPY static /app/static
-
-VOLUME ["/data"]
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+RUN mkdir -p /data/backups
 EXPOSE 8088
-CMD ["python3", "/app/app.py"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8088", "--workers", "1", "--threads", "8", "--timeout", "1900", "app:app"]

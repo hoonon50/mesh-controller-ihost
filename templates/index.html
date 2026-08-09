@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OpenWrt Mesh Controller PRO WEB</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div><h1>OpenWrt Mesh Controller PRO <span>WEB v3.0</span></h1><p id="lastRefresh">Načítám…</p></div>
+  <button class="primary" onclick="runAction('/api/refresh','Obnovuji stav sítě…')">OBNOVIT STAV</button>
+</header>
+
+<section class="metrics" id="metrics"></section>
+
+<main>
+  <section class="leftcol">
+    <div class="card"><div class="cardhead"><h2>Živá mesh topologie</h2><span>skutečné 802.11s spoje</span></div><svg id="meshMap" viewBox="0 0 900 520"></svg></div>
+    <div class="card"><div class="cardhead"><h2>Klienti</h2><input id="search" placeholder="Hledat IP, MAC, zařízení…" oninput="renderClients()"></div><div class="tabs"><button onclick="setFilter('Vše')">Vše</button><button onclick="setFilter('Wi-Fi')">Wi‑Fi</button><button onclick="setFilter('LAN')">LAN</button><button onclick="setFilter('Neurčené')">Neurčené</button></div><div class="tablewrap"><table><thead><tr><th>Uzel</th><th>Typ</th><th>Zařízení</th><th>IP</th><th>MAC</th><th>Port</th><th>Detail</th></tr></thead><tbody id="clientsBody"></tbody></table></div></div>
+  </section>
+
+  <aside>
+    <div class="card"><div class="cardhead"><h2>LAN porty</h2></div><div id="ports"></div></div>
+    <div class="card"><div class="cardhead"><h2>Údržba</h2></div><div class="actions">
+      <button onclick="runAction('/api/ping','Ping test…')">PING 5 UZLŮ</button>
+      <button onclick="runAction('/api/active-scan','Aktivní scan LAN…')">AKTIVNĚ VYHLEDAT</button>
+      <button onclick="runAction('/api/backup','Zálohuji konfigurace…')">ZÁLOHOVAT</button>
+      <button onclick="maintenance()">STAV HLAVNÍHO UZLU</button>
+      <button onclick="led('off')">LED TRVALE OFF</button>
+      <button onclick="led('on')">LED TRVALE ON</button>
+      <button onclick="led('default')">LED VÝCHOZÍ</button>
+      <button class="danger" onclick="dangerAction('/api/update','Opravdu aktualizovat balíčky na všech 5 routerech?','Aktualizuji routery…')">AKTUALIZOVAT BALÍČKY</button>
+      <button class="danger" onclick="dangerAction('/api/reboot','Opravdu restartovat všech 5 routerů?','Restartuji routery…')">RESTART 5 ROUTERŮ</button>
+    </div><pre id="maintenanceBox">Stav nebyl načten.</pre></div>
+
+    <div class="card"><div class="cardhead"><h2>SAFE MESH</h2><span>destruktivní změna Wi‑Fi</span></div>
+      <div class="formgrid">
+        <label>Hlavní SSID<input id="ssid_main" value="AP_network2"></label>
+        <label>Legacy SSID<input id="ssid_legacy" value="AP_network3"></label>
+        <label>Wi‑Fi heslo<input id="key" type="password" value="88888888"></label>
+        <label>Mesh ID<input id="mesh_id" value="cudy-backhaul"></label>
+        <label>Země<input id="country" value="CZ"></label>
+        <label>Mobility domain<input id="mobility" value="1234"></label>
+        <label>2,4 GHz kanál<select id="channel_24"><option>1</option><option>6</option><option>11</option></select></label>
+        <label>5 GHz kanál<select id="channel_5"><option>36</option><option>40</option><option>44</option><option>48</option></select></label>
+        <label>TX dBm<select id="txpower"><option>20</option><option>17</option><option>14</option><option>10</option></select></label>
+      </div>
+      <button class="danger full" onclick="safeMesh()">ZÁLOHA + NASADIT SAFE MESH</button>
+    </div>
+
+    <div class="card"><div class="cardhead"><h2>Diagnostický log</h2></div><pre id="logBox"></pre></div>
+  </aside>
+</main>
+
+<div id="toast"></div>
+<script>window.REFRESH_SECONDS={{ refresh_seconds|int }};</script>
+<script src="/static/app.js"></script>
+</body>
+</html>

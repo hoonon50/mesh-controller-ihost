@@ -1,6 +1,6 @@
-OpenWrt Mesh Controller PRO WEB v3.3 – SONOFF iHost ARMv7
+OpenWrt Mesh Controller PRO WEB v3.3.1 – SONOFF iHost ARMv7
 
-Změny v3.3:
+Změny v3.3.1:
 - SAFE MESH není součástí webu.
 - Diagnostický log byl odstraněn; zůstal pouze živý log právě probíhající operace.
 - Aktualizace balíčků se spustí okamžitě po kliknutí, bez potvrzovacího dialogu.

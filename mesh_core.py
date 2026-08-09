@@ -11,7 +11,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import paramiko
 
@@ -42,6 +42,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$", re.I)
 IFACE_ID_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+ProgressCallback = Callable[[int, str, Optional[str], Optional[str], Optional[str]], None]
 
 
 @dataclass
@@ -660,31 +662,69 @@ class MeshController:
             clients.append(Client(node_ip=selected.node_ip, node_name=selected.node_name, mac=mac, interface=selected.dev, ssid="", band="Ethernet", signal=None, ip=lease.get("ip") or selected.ip or neighbors.get(mac, ""), hostname=lease.get("hostname", ""), connection_type="Neurčené", port="Port nezjištěn", bridge=selected.dev, detection_source="ARP", neighbor_state=selected.state, verification="Pouze ARP – není potvrzený LAN port"))
         return clients
 
-    def refresh(self) -> Dict[str, Any]:
+    def refresh(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         if not self._refresh_lock.acquire(blocking=False):
+            if progress:
+                progress(100, "Obnovení už probíhá v jiném vlákně; používám aktuální stav.", None, None, None)
             return self.snapshot()
         try:
             self.log("[INFO] Zahajuji paralelní SSH diagnostiku všech uzlů…")
-            results: Dict[str, NodeResult] = {}; lock = threading.Lock(); threads: List[threading.Thread] = []
+            if progress:
+                progress(0, "Zahajuji SSH diagnostiku všech uzlů…", None, None, None)
+            results: Dict[str, NodeResult] = {}
+            lock = threading.Lock()
+            threads: List[threading.Thread] = []
+            total = max(1, len(self.routers))
+            completed = 0
+
             def worker(router: Dict[str, Any]) -> None:
+                nonlocal completed
+                ip = str(router["ip"])
+                if progress:
+                    progress(max(2, int(completed * 88 / total)), f"{ip} – načítám stav přes SSH…", ip, "running", "Načítám Wi-Fi, klienty, LAN porty a mesh spoje.")
                 node = self.discover_node(router)
-                with lock: results[node.ip] = node
+                with lock:
+                    results[node.ip] = node
+                    completed += 1
+                    percent = min(90, int(completed * 90 / total))
                 if node.online:
-                    self.log(f"[OK] {node.ip}: Wi-Fi {len(node.clients)}, LAN porty {sum(p.connected for p in node.lan_ports)}/{len(node.lan_ports)}, mesh {len(node.mesh_peers)}")
+                    detail = f"Wi-Fi {len(node.clients)}, LAN porty {sum(p.connected for p in node.lan_ports)}/{len(node.lan_ports)}, mesh {len(node.mesh_peers)}"
+                    self.log(f"[OK] {node.ip}: {detail}")
+                    if progress:
+                        progress(percent, f"{node.ip} – diagnostika hotová.", node.ip, "done", detail)
                 else:
-                    self.log(f"[OFFLINE] {node.ip}: {node.error or 'SSH nedostupné'}")
+                    detail = node.error or "SSH nedostupné"
+                    self.log(f"[OFFLINE] {node.ip}: {detail}")
+                    if progress:
+                        progress(percent, f"{node.ip} – nedostupný.", node.ip, "error", detail)
+
             for router in self.routers:
-                t = threading.Thread(target=worker, args=(router,), daemon=True); t.start(); threads.append(t)
-            for t in threads: t.join()
+                t = threading.Thread(target=worker, args=(router,), daemon=True)
+                t.start()
+                threads.append(t)
+            for t in threads:
+                t.join()
+
+            if progress:
+                progress(94, "Sestavuji mesh topologii a seznam klientů…", None, None, None)
             for router in self.routers:
                 results.setdefault(router["ip"], NodeResult(ip=router["ip"], name=router["name"], online=False))
-            links = self.build_mesh_links(results); clients = self.enrich_clients(results)
+            links = self.build_mesh_links(results)
+            clients = self.enrich_clients(results)
             with self._lock:
-                self.node_results = results; self.mesh_links = links; self.all_clients = clients; self.last_refresh = time.strftime("%Y-%m-%d %H:%M:%S"); self.last_error = ""
+                self.node_results = results
+                self.mesh_links = links
+                self.all_clients = clients
+                self.last_refresh = time.strftime("%Y-%m-%d %H:%M:%S")
+                self.last_error = ""
             self.log(f"[HOTOVO] Online {sum(n.online for n in results.values())}/{len(self.routers)}, klienti {len(clients)}, mesh spoje {len(links)}.")
+            if progress:
+                progress(100, f"Hotovo – online {sum(n.online for n in results.values())}/{len(self.routers)}, klienti {len(clients)}, mesh spoje {len(links)}.", None, None, None)
             return self.snapshot()
         except Exception as exc:
-            self.last_error = str(exc); self.log(f"[KRITICKÁ CHYBA] {exc}"); raise
+            self.last_error = str(exc)
+            self.log(f"[KRITICKÁ CHYBA] {exc}")
+            raise
         finally:
             self._refresh_lock.release()
 
@@ -704,60 +744,148 @@ class MeshController:
             }
             return {"summary": summary, "nodes": nodes, "links": links, "clients": clients, "routers": self.routers, "uplinks": {k: sorted(v) for k, v in self.lan_uplink_ports.items()}}
 
-    def active_scan(self) -> Dict[str, Any]:
+    def active_scan(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         self.log("[SCAN] Aktivní průzkum LAN…")
+        if progress:
+            progress(0, "Aktivní průzkum LAN 192.168.30.0/24…", None, None, None)
         prefix = str(self.lan_network.network_address).rsplit(".", 1)[0]
-        def ping_ip(i: int) -> None:
-            subprocess.run(["ping", "-c", "1", "-W", "1", f"{prefix}.{i}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, check=False)
-        workers = []
-        for i in range(1, 255):
-            t = threading.Thread(target=ping_ip, args=(i,), daemon=True); t.start(); workers.append(t)
-            if len(workers) >= 40:
-                for w in workers: w.join(); workers = []
-        for w in workers: w.join()
-        return self.refresh()
 
-    def backup_configs(self) -> Dict[str, Any]:
-        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S"); backup_dir = BACKUP_DIR / f"BACKUP_{timestamp}"; backup_dir.mkdir(parents=True, exist_ok=True)
-        success = failed = 0; names = ("wireless", "network", "dhcp", "dawn")
-        for router in self.routers:
-            ip = router["ip"]; node_dir = backup_dir / ip; node_dir.mkdir(parents=True, exist_ok=True); ssh = None
+        def ping_ip(i: int) -> None:
+            subprocess.run(
+                ["ping", "-c", "1", "-W", "1", f"{prefix}.{i}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+                check=False,
+            )
+
+        workers: List[threading.Thread] = []
+        scanned = 0
+        for i in range(1, 255):
+            t = threading.Thread(target=ping_ip, args=(i,), daemon=True)
+            t.start()
+            workers.append(t)
+            if len(workers) >= 40:
+                for worker in workers:
+                    worker.join()
+                scanned += len(workers)
+                workers = []
+                if progress:
+                    progress(min(68, int(scanned * 68 / 254)), f"Prohledáno {scanned}/254 adres…", None, None, None)
+        for worker in workers:
+            worker.join()
+        scanned += len(workers)
+        if progress:
+            progress(70, "Průzkum LAN dokončen, načítám nové ARP/FDB údaje…", None, None, None)
+
+        def scaled_refresh(percent: int, message: str, ip: Optional[str], status: Optional[str], detail: Optional[str]) -> None:
+            if progress:
+                progress(70 + int(max(0, min(100, percent)) * 0.30), message, ip, status, detail)
+
+        return self.refresh(progress=scaled_refresh)
+
+    def backup_configs(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
+        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        backup_dir = BACKUP_DIR / f"BACKUP_{timestamp}"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        success = failed = 0
+        names = ("wireless", "network", "dhcp", "dawn")
+        total = max(1, len(self.routers))
+        if progress:
+            progress(0, f"Vytvářím zálohu do {backup_dir}…", None, None, None)
+
+        for index, router in enumerate(self.routers, start=1):
+            ip = router["ip"]
+            node_dir = backup_dir / ip
+            node_dir.mkdir(parents=True, exist_ok=True)
+            ssh = None
+            if progress:
+                progress(int((index - 1) * 100 / total), f"{ip} – zálohuji konfiguraci…", ip, "running", "wireless / network / dhcp / dawn")
             try:
                 ssh = self.make_ssh_client(ip, timeout=6)
                 for name in names:
                     out, _err, _code = self.ssh_command(ssh, f"cat /etc/config/{shlex.quote(name)} 2>/dev/null || true")
                     (node_dir / name).write_text(out, encoding="utf-8")
-                (node_dir / "metadata.json").write_text(json.dumps({"ip": ip, "name": router["name"], "created": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=2), encoding="utf-8")
-                success += 1; self.log(f"[ZÁLOHA OK] {ip}")
+                (node_dir / "metadata.json").write_text(
+                    json.dumps({"ip": ip, "name": router["name"], "created": time.strftime("%Y-%m-%d %H:%M:%S")}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                success += 1
+                self.log(f"[ZÁLOHA OK] {ip}")
+                if progress:
+                    progress(int(index * 100 / total), f"{ip} – záloha hotová.", ip, "done", "Uloženo do persistentního /data/backups.")
             except Exception as exc:
-                failed += 1; (node_dir / "ERROR.txt").write_text(str(exc), encoding="utf-8"); self.log(f"[ZÁLOHA CHYBA] {ip}: {exc}")
+                failed += 1
+                (node_dir / "ERROR.txt").write_text(str(exc), encoding="utf-8")
+                self.log(f"[ZÁLOHA CHYBA] {ip}: {exc}")
+                if progress:
+                    progress(int(index * 100 / total), f"{ip} – záloha selhala.", ip, "error", str(exc))
             finally:
-                if ssh is not None: ssh.close()
-        summary = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "success_nodes": success, "failed_nodes": failed, "nodes": [r["ip"] for r in self.routers]}
+                if ssh is not None:
+                    ssh.close()
+
+        summary = {
+            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "success_nodes": success,
+            "failed_nodes": failed,
+            "nodes": [r["ip"] for r in self.routers],
+        }
         (backup_dir / "backup_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        if progress:
+            progress(100, f"Záloha dokončena – úspěch {success}, chyba {failed}.", None, None, None)
         return {"ok": failed == 0, "backup_dir": str(backup_dir), "success": success, "failed": failed}
 
-    def ping_all(self) -> Dict[str, Any]:
+    def ping_all(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         results = []
-        for router in self.routers:
+        total = max(1, len(self.routers))
+        if progress:
+            progress(0, "Spouštím ping test všech uzlů…", None, None, None)
+        for index, router in enumerate(self.routers, start=1):
             ip = router["ip"]
+            if progress:
+                progress(int((index - 1) * 100 / total), f"{ip} – ping…", ip, "running", "Čekám na odpověď.")
             try:
                 cp = subprocess.run(["ping", "-c", "1", "-W", "1", ip], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3, check=False)
-                results.append({"ip": ip, "ok": cp.returncode == 0})
+                ok = cp.returncode == 0
+                results.append({"ip": ip, "ok": ok})
+                if progress:
+                    progress(int(index * 100 / total), f"{ip} – {'odpovídá' if ok else 'bez odpovědi'}.", ip, "done" if ok else "error", "PING OK" if ok else "PING bez odpovědi")
             except Exception as exc:
                 results.append({"ip": ip, "ok": False, "error": str(exc)})
-        return {"results": results, "success": sum(r["ok"] for r in results)}
+                if progress:
+                    progress(int(index * 100 / total), f"{ip} – ping chyba.", ip, "error", str(exc))
+        success = sum(r["ok"] for r in results)
+        if progress:
+            progress(100, f"Ping test dokončen – {success}/{len(results)} uzlů odpovídá.", None, None, None)
+        return {"results": results, "success": success}
 
-    def reboot_all(self) -> Dict[str, Any]:
+    def reboot_all(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         success = failed = 0
-        for router in self.routers:
+        total = max(1, len(self.routers))
+        if progress:
+            progress(0, "Odesílám restart všem routerům…", None, None, None)
+        for index, router in enumerate(self.routers, start=1):
+            ip = router["ip"]
             ssh = None
+            if progress:
+                progress(int((index - 1) * 100 / total), f"{ip} – odesílám příkaz reboot…", ip, "running", "SSH připojení se po příkazu může ukončit.")
             try:
-                ssh = self.make_ssh_client(router["ip"], timeout=5); ssh.exec_command("(sleep 1; reboot) >/dev/null 2>&1 &"); success += 1; self.log(f"[REBOOT OK] {router['ip']}")
+                ssh = self.make_ssh_client(ip, timeout=5)
+                ssh.exec_command("(sleep 1; reboot) >/dev/null 2>&1 &")
+                success += 1
+                self.log(f"[REBOOT OK] {ip}")
+                if progress:
+                    progress(int(index * 100 / total), f"{ip} – restart odeslán.", ip, "done", "Příkaz reboot byl přijat.")
             except Exception as exc:
-                failed += 1; self.log(f"[REBOOT CHYBA] {router['ip']}: {exc}")
+                failed += 1
+                self.log(f"[REBOOT CHYBA] {ip}: {exc}")
+                if progress:
+                    progress(int(index * 100 / total), f"{ip} – restart selhal.", ip, "error", str(exc))
             finally:
-                if ssh is not None: ssh.close()
+                if ssh is not None:
+                    ssh.close()
+        if progress:
+            progress(100, f"Restart odeslán – úspěch {success}, chyba {failed}.", None, None, None)
         return {"ok": failed == 0, "success": success, "failed": failed}
 
     def maintenance_status(self) -> Dict[str, Any]:
@@ -818,18 +946,39 @@ grep -qxF '/etc/mesh_led_mode' /etc/sysupgrade.conf 2>/dev/null || echo '/etc/me
 echo "LED_MODE=$MODE"
 '''
 
-    def led_mode(self, mode: str, targets: Optional[List[str]] = None) -> Dict[str, Any]:
-        if mode not in {"off", "on", "default"}: raise ValueError("Neplatný LED režim")
-        targets = targets or [r["ip"] for r in self.routers]; success = failed = 0; details = []
-        for ip in targets:
+    def led_mode(self, mode: str, targets: Optional[List[str]] = None, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
+        if mode not in {"off", "on", "default"}:
+            raise ValueError("Neplatný LED režim")
+        targets = targets or [r["ip"] for r in self.routers]
+        success = failed = 0
+        details = []
+        total = max(1, len(targets))
+        if progress:
+            progress(0, f"Nastavuji LED režim '{mode}'…", None, None, None)
+        for index, ip in enumerate(targets, start=1):
             ssh = None
+            if progress:
+                progress(int((index - 1) * 100 / total), f"{ip} – nastavuji LED {mode}…", ip, "running", "Zapisuji trvalý LED režim.")
             try:
-                ssh = self.make_ssh_client(ip, timeout=6); out, err, code = self.ssh_script(ssh, self.make_persistent_led_script(mode), timeout=30)
-                ok = code == 0 and f"LED_MODE={mode}" in out; success += int(ok); failed += int(not ok); details.append({"ip": ip, "ok": ok, "detail": (err or out).strip()})
+                ssh = self.make_ssh_client(ip, timeout=6)
+                out, err, code = self.ssh_script(ssh, self.make_persistent_led_script(mode), timeout=30)
+                ok = code == 0 and f"LED_MODE={mode}" in out
+                success += int(ok)
+                failed += int(not ok)
+                detail = (err or out).strip()
+                details.append({"ip": ip, "ok": ok, "detail": detail})
+                if progress:
+                    progress(int(index * 100 / total), f"{ip} – LED {'nastaveno' if ok else 'chyba'}.", ip, "done" if ok else "error", detail[-400:] or ("OK" if ok else "Neznámá chyba"))
             except Exception as exc:
-                failed += 1; details.append({"ip": ip, "ok": False, "detail": str(exc)})
+                failed += 1
+                details.append({"ip": ip, "ok": False, "detail": str(exc)})
+                if progress:
+                    progress(int(index * 100 / total), f"{ip} – LED chyba.", ip, "error", str(exc))
             finally:
-                if ssh is not None: ssh.close()
+                if ssh is not None:
+                    ssh.close()
+        if progress:
+            progress(100, f"LED dokončeno – úspěch {success}, chyba {failed}.", None, None, None)
         return {"ok": failed == 0, "success": success, "failed": failed, "details": details}
 
     @staticmethod
@@ -841,74 +990,38 @@ else echo 'Nenalezen apk ani opkg.' >&2; exit 127; fi
 echo 'UPDATE_OK'
 '''
 
-    def update_all(self) -> Dict[str, Any]:
-        success = failed = 0; details = []
-        for router in self.routers:
-            ip = router["ip"]; ssh = None
+    def update_all(self, progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
+        success = failed = 0
+        details = []
+        total = max(1, len(self.routers))
+        if progress:
+            progress(0, "Zahajuji aktualizaci balíčků všech routerů…", None, None, None)
+        for index, router in enumerate(self.routers, start=1):
+            ip = router["ip"]
+            ssh = None
+            start_percent = int((index - 1) * 100 / total)
+            end_percent = int(index * 100 / total)
+            if progress:
+                progress(start_percent, f"{ip} – připojuji se a aktualizuji balíčky…", ip, "running", "Probíhá apk/opkg update a upgrade. Může to několik minut trvat.")
             try:
-                ssh = self.make_ssh_client(ip, timeout=8); out, err, code = self.ssh_script(ssh, self.make_package_update_script(), timeout=180); ok = code == 0 and "UPDATE_OK" in out
-                success += int(ok); failed += int(not ok); details.append({"ip": ip, "ok": ok, "detail": (err or out).strip()[-3000:]})
+                ssh = self.make_ssh_client(ip, timeout=8)
+                out, err, code = self.ssh_script(ssh, self.make_package_update_script(), timeout=180)
+                ok = code == 0 and "UPDATE_OK" in out
+                success += int(ok)
+                failed += int(not ok)
+                detail = (err or out).strip()[-3000:]
+                details.append({"ip": ip, "ok": ok, "detail": detail})
+                if progress:
+                    progress(end_percent, f"{ip} – aktualizace {'hotová' if ok else 'skončila chybou'}.", ip, "done" if ok else "error", detail[-600:] or ("UPDATE_OK" if ok else "Aktualizace selhala"))
             except Exception as exc:
-                failed += 1; details.append({"ip": ip, "ok": False, "detail": str(exc)})
+                failed += 1
+                details.append({"ip": ip, "ok": False, "detail": str(exc)})
+                if progress:
+                    progress(end_percent, f"{ip} – aktualizace selhala.", ip, "error", str(exc))
             finally:
-                if ssh is not None: ssh.close()
+                if ssh is not None:
+                    ssh.close()
+        if progress:
+            progress(100, f"Aktualizace dokončena – úspěch {success}, chyba {failed}.", None, None, None)
         return {"ok": failed == 0, "success": success, "failed": failed, "details": details}
 
-    @staticmethod
-    def q(value: str) -> str:
-        return shlex.quote(value)
-
-    def make_safe_mesh_script(self, settings: Dict[str, str], is_main: bool) -> str:
-        q = self.q; mesh_fwding = "0" if is_main else "1"; dhcp_ignore = "0" if is_main else "1"
-        service_commands = "/etc/init.d/dnsmasq enable; /etc/init.d/dnsmasq restart" if is_main else "/etc/init.d/dnsmasq stop; /etc/init.d/dnsmasq disable"
-        return f'''#!/bin/sh
-set -eu
-SSID_MAIN={q(settings['ssid_main'])}
-SSID_LEGACY={q(settings['ssid_legacy'])}
-KEY={q(settings['key'])}
-MESH_ID={q(settings['mesh_id'])}
-COUNTRY={q(settings['country'])}
-MOBILITY={q(settings['mobility'])}
-CH24={q(settings['channel_24'])}
-CH5={q(settings['channel_5'])}
-TXPOWER={q(settings['txpower'])}
-uci export wireless > /tmp/wireless.before_safe_mesh 2>/dev/null || true
-uci export dhcp > /tmp/dhcp.before_safe_mesh 2>/dev/null || true
-SECTIONS=$(uci show wireless | awk -F'[.=]' '/=wifi-iface$/ {{print $2}}' | awk '{{a[NR]=$0}} END {{for(i=NR;i>0;i--) print a[i]}}')
-for i in $SECTIONS; do MODE=$(uci -q get wireless.$i.mode || true); if [ "$MODE" = "ap" ] || [ "$MODE" = "mesh" ]; then uci -q delete wireless.$i || true; fi; done
-uci set wireless.radio0.country="$COUNTRY"; uci set wireless.radio1.country="$COUNTRY"
-uci set wireless.radio0.channel="$CH24"; uci set wireless.radio0.htmode='HE20'; uci set wireless.radio0.txpower="$TXPOWER"
-uci set wireless.radio1.channel="$CH5"; uci set wireless.radio1.htmode='HE80'; uci set wireless.radio1.txpower="$TXPOWER"
-uci set wireless.ap_main_24='wifi-iface'; uci set wireless.ap_main_24.device='radio0'; uci set wireless.ap_main_24.mode='ap'; uci set wireless.ap_main_24.ssid="$SSID_MAIN"; uci set wireless.ap_main_24.encryption='sae-mixed'; uci set wireless.ap_main_24.key="$KEY"; uci set wireless.ap_main_24.network='lan'; uci set wireless.ap_main_24.ieee80211r='1'; uci set wireless.ap_main_24.ieee80211k='1'; uci set wireless.ap_main_24.ieee80211v='1'; uci set wireless.ap_main_24.mobility_domain="$MOBILITY"; uci set wireless.ap_main_24.ft_over_ds='0'
-uci set wireless.ap_main_5='wifi-iface'; uci set wireless.ap_main_5.device='radio1'; uci set wireless.ap_main_5.mode='ap'; uci set wireless.ap_main_5.ssid="$SSID_MAIN"; uci set wireless.ap_main_5.encryption='sae-mixed'; uci set wireless.ap_main_5.key="$KEY"; uci set wireless.ap_main_5.network='lan'; uci set wireless.ap_main_5.ieee80211r='1'; uci set wireless.ap_main_5.ieee80211k='1'; uci set wireless.ap_main_5.ieee80211v='1'; uci set wireless.ap_main_5.mobility_domain="$MOBILITY"; uci set wireless.ap_main_5.ft_over_ds='0'
-uci set wireless.ap_legacy_24='wifi-iface'; uci set wireless.ap_legacy_24.device='radio0'; uci set wireless.ap_legacy_24.mode='ap'; uci set wireless.ap_legacy_24.ssid="$SSID_LEGACY"; uci set wireless.ap_legacy_24.encryption='psk2'; uci set wireless.ap_legacy_24.key="$KEY"; uci set wireless.ap_legacy_24.network='lan'
-uci set wireless.mesh_backhaul='wifi-iface'; uci set wireless.mesh_backhaul.device='radio1'; uci set wireless.mesh_backhaul.mode='mesh'; uci set wireless.mesh_backhaul.mesh_id="$MESH_ID"; uci set wireless.mesh_backhaul.encryption='sae'; uci set wireless.mesh_backhaul.key="$KEY"; uci set wireless.mesh_backhaul.network='lan'; uci set wireless.mesh_backhaul.mesh_fwding='{mesh_fwding}'
-uci set dhcp.lan.ignore='{dhcp_ignore}'; uci commit wireless; uci commit dhcp
-echo 'CONFIG_STAGED_OK'
-(sleep 2; wifi reload; /etc/init.d/network restart; {service_commands}; /etc/init.d/dawn restart 2>/dev/null || true) >/tmp/safe_mesh_apply.log 2>&1 &
-exit 0
-'''
-
-    def safe_mesh_deploy(self, settings: Dict[str, str]) -> Dict[str, Any]:
-        required = ["ssid_main", "ssid_legacy", "key", "mesh_id", "country", "mobility", "channel_24", "channel_5", "txpower"]
-        if any(not str(settings.get(k, "")).strip() for k in required): raise ValueError("Chybí hodnoty SAFE MESH")
-        if len(settings["key"]) < 8: raise ValueError("Wi-Fi heslo musí mít alespoň 8 znaků")
-        if not re.fullmatch(r"[0-9A-Fa-f]{4}", settings["mobility"]): raise ValueError("Mobility domain musí mít 4 hex znaky")
-        if not re.fullmatch(r"[A-Za-z]{2}", settings["country"]): raise ValueError("Kód země musí mít 2 znaky")
-        settings = {k: str(settings[k]).strip() for k in required}; settings["country"] = settings["country"].upper()
-        backup = self.backup_configs()
-        if backup["failed"]:
-            return {"ok": False, "stopped": True, "reason": "Záloha před nasazením nebyla úplná", "backup": backup}
-        success = failed = 0; details = []
-        ordered = sorted(self.routers, key=lambda r: 0 if r["ip"] == self.main_node else 1)
-        for router in ordered:
-            ip = router["ip"]; ssh = None
-            try:
-                ssh = self.make_ssh_client(ip, timeout=8); out, err, code = self.ssh_script(ssh, self.make_safe_mesh_script(settings, ip == self.main_node), timeout=40); ok = code == 0 and "CONFIG_STAGED_OK" in out
-                success += int(ok); failed += int(not ok); details.append({"ip": ip, "ok": ok, "detail": (err or out).strip()})
-            except Exception as exc:
-                failed += 1; details.append({"ip": ip, "ok": False, "detail": str(exc)})
-            finally:
-                if ssh is not None: ssh.close()
-            time.sleep(0.4)
-        return {"ok": failed == 0, "success": success, "failed": failed, "details": details, "backup": backup}

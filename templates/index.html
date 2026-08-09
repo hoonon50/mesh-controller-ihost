@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OpenWrt Mesh Controller PRO v3.5</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <title>OpenWrt Mesh Controller PRO v3.6</title>
+  <link rel="stylesheet" href="/static/style.css?v=3.6">
 </head>
 <body>
 <header>
   <div>
-    <h1>OpenWrt Mesh Controller PRO <span>v3.5</span></h1>
+    <h1>OpenWrt Mesh Controller PRO <span>v3.6</span></h1>
     <p>SONOFF iHost · 192.168.30.0/24</p>
   </div>
   <button id="refreshBtn" class="secondary">Obnovit stav</button>
@@ -21,7 +21,7 @@
   <section class="grid-main">
     <article class="card topology-card">
       <div class="card-head">
-        <div><h2>Živá topologie</h2><p>U spojů se zobrazuje jen dBm a rychlost; popisky se automaticky rozmisťují mimo uzly.</p></div>
+        <div><h2>Živá topologie</h2><p>Názvy jsou skutečné hostname routerů. Spoje mají jen dBm a rychlost a jsou vedené v oddělených křivkách pro lepší čitelnost.</p></div>
         <div class="legend"><i class="good"></i> dobrý <i class="mid"></i> střední <i class="bad"></i> slabý</div>
       </div>
       <div id="topology" class="topology">
@@ -50,15 +50,15 @@
   <section class="grid-bottom">
     <article class="card">
       <div class="card-head"><div><h2>Údržba</h2><p>Akce se spustí okamžitě a průběh je vidět nahoře.</p></div></div>
-      <div class="actions">
-        <button data-action="ping">PING 5 UZLŮ</button>
-        <button data-action="update" class="warn">AKTUALIZOVAT VŠECH 5 UZLŮ</button>
+      <div class="actions maintenance-actions">
+        <button data-action="ping">PING 5 ROUTERŮ</button>
+        <button data-action="update" class="warn">AKTUALIZOVAT VŠECH 5 ROUTERŮ</button>
+        <button data-action="reboot" class="reboot-btn">REBOOT</button>
       </div>
       <div class="led-row">
         <label for="ledTarget">LED cíl</label>
         <select id="ledTarget">
-          <option value="all">Všechny uzly</option>
-          {% for r in routers %}<option value="{{ r.ip }}">{{ r.name }} · {{ r.ip }}</option>{% endfor %}
+          <option value="all">Všechny routery</option>
         </select>
         <button data-action="led_on" class="good-btn">LED ON</button>
         <button data-action="led_off" class="danger">LED OFF</button>
@@ -79,9 +79,9 @@
 
   <section class="card clients-card">
     <div class="card-head"><div><h2>Klienti</h2><p>Wi-Fi stanice + FDB/LAN + ARP + DHCP fallback.</p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Uzel</th><th>Zařízení</th><th>IP</th><th>MAC</th><th>Typ</th><th>Detail</th></tr></thead><tbody id="clientsBody"></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>Router</th><th>Zařízení</th><th>IP</th><th>MAC</th><th>Typ</th><th>Detail</th></tr></thead><tbody id="clientsBody"></tbody></table></div>
   </section>
 </main>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=3.6"></script>
 </body>
 </html>

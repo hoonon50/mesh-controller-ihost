@@ -220,6 +220,21 @@ class MeshController:
         with self._status_lock:
             return json.loads(json.dumps(self._snapshot))
 
+    def runtime_routers(self) -> List[Dict[str, str]]:
+        """Vrátí konfiguraci routerů s aktuálním hostname jako zobrazovaným názvem."""
+        snap = self.get_snapshot()
+        names = {
+            str(n.get("ip", "")): str(n.get("hostname") or n.get("name") or "").strip()
+            for n in snap.get("nodes", [])
+            if isinstance(n, dict)
+        }
+        result: List[Dict[str, str]] = []
+        for router in self.routers:
+            item = dict(router)
+            item["name"] = names.get(router["ip"]) or router.get("name") or router["ip"]
+            result.append(item)
+        return result
+
     def refresh_snapshot(self) -> Dict[str, Any]:
         # Robustní klientská detekce: Wi-Fi station + FDB + ARP + DHCP fallback.
         node_states: List[Dict[str, Any]] = []
@@ -262,6 +277,10 @@ done; printf 'PORTS_END\n'
                 up = re.search(r"^UP=(.*)$", out, re.M)
                 macs = re.search(r"^MACS=(.*)$", out, re.M)
                 state.hostname = host.group(1).strip() if host else ""
+                # Zobrazený název se vždy řídí skutečným hostname routeru.
+                # Konfigurační name zůstává pouze jako fallback pro offline uzel.
+                if state.hostname:
+                    state.name = state.hostname
                 if up and up.group(1).strip().isdigit():
                     sec = int(up.group(1).strip())
                     state.uptime = f"{sec // 86400}d {(sec % 86400) // 3600}h"
@@ -468,6 +487,11 @@ done; printf 'PORTS_END\n'
             for n in data.get("neighbors", []):
                 neigh_ip.setdefault(n["mac"], n["ip"])
 
+        display_names = {
+            state["ip"]: (state.get("hostname") or state.get("name") or state["ip"])
+            for state in node_states
+        }
+
         clients_by_mac: Dict[str, Dict[str, Any]] = {}
         for router in self.routers:
             data = raw_nodes.get(router["ip"], {})
@@ -482,7 +506,7 @@ done; printf 'PORTS_END\n'
                 if wclient.get("signal") is not None:
                     details.append(f"{wclient['signal']} dBm")
                 clients_by_mac[mac] = {
-                    "node": router["name"], "node_ip": router["ip"],
+                    "node": display_names.get(router["ip"], router["name"]), "node_ip": router["ip"],
                     "ip": lease.get("ip") or neigh_ip.get(mac, ""),
                     "mac": mac, "hostname": lease.get("hostname", ""),
                     "type": "Wi-Fi", "detail": " · ".join(details),
@@ -496,7 +520,7 @@ done; printf 'PORTS_END\n'
                     continue
                 lease = lease_map.get(mac, {})
                 clients_by_mac[mac] = {
-                    "node": router["name"], "node_ip": router["ip"],
+                    "node": display_names.get(router["ip"], router["name"]), "node_ip": router["ip"],
                     "ip": lease.get("ip") or neigh_ip.get(mac, ""),
                     "mac": mac, "hostname": lease.get("hostname", ""),
                     "type": "LAN", "detail": fdb.get("port", "br-lan"),
@@ -510,13 +534,13 @@ done; printf 'PORTS_END\n'
                     continue
                 lease = lease_map.get(mac, {})
                 clients_by_mac[mac] = {
-                    "node": router["name"], "node_ip": router["ip"],
+                    "node": display_names.get(router["ip"], router["name"]), "node_ip": router["ip"],
                     "ip": lease.get("ip") or n.get("ip", ""), "mac": mac,
                     "hostname": lease.get("hostname", ""), "type": "Neurčené",
                     "detail": f"ARP {n.get('state', '')}".strip(),
                 }
 
-        main_name = self.routers[0]["name"] if self.routers else "ROUTER"
+        main_name = display_names.get(self.routers[0]["ip"], self.routers[0]["name"]) if self.routers else "ROUTER"
         main_ip = self.routers[0]["ip"] if self.routers else "192.168.30.1"
         for mac, lease in lease_map.items():
             if mac in clients_by_mac or mac in local_macs or mac in mesh_macs:
@@ -546,11 +570,12 @@ done; printf 'PORTS_END\n'
         return snapshot
 
     def _run_per_router(self, title: str, worker: Callable[[Dict[str, str]], Tuple[bool, str]], result_label: str) -> None:
-        if not self.operation.start(title, self.routers):
+        routers = self.runtime_routers()
+        if not self.operation.start(title, routers):
             return
         ok_count = 0
-        total = len(self.routers)
-        for index, router in enumerate(self.routers):
+        total = len(routers)
+        for index, router in enumerate(routers):
             ip = router["ip"]
             self.operation.update(percent=int(index * 100 / total), current=f"{router['name']} ({ip})…", ip=ip, state="PROBÍHÁ", log=f"{router['name']} ({ip}) – start")
             try:
@@ -660,7 +685,8 @@ echo LED_OK
     def start_led(self, mode: str, target: str = "all") -> bool:
         if mode not in {"on", "off"} or self.operation.snapshot()["running"]:
             return False
-        routers = self.routers if target == "all" else [r for r in self.routers if r["ip"] == target]
+        runtime = self.runtime_routers()
+        routers = runtime if target == "all" else [r for r in runtime if r["ip"] == target]
         if not routers:
             return False
         def run() -> None:
@@ -686,6 +712,33 @@ echo LED_OK
         threading.Thread(target=run, daemon=True).start()
         return True
 
+    def start_reboot(self) -> bool:
+        """Pošle restart všem routerům a průběh zobrazí v Operation panelu."""
+        if self.operation.snapshot()["running"]:
+            return False
+
+        def worker(router: Dict[str, str]) -> Tuple[bool, str]:
+            c = self.ssh_client(router["ip"], 5)
+            try:
+                # Reboot se spustí s malým zpožděním, aby SSH stihlo vrátit potvrzení.
+                out, err, code = self.command(
+                    c,
+                    "printf 'REBOOT_SENT\n'; (sleep 1; reboot) >/dev/null 2>&1 &",
+                    8,
+                )
+                if code == 0 and "REBOOT_SENT" in out:
+                    return True, "restart odeslán"
+                return False, (err or out or f"exit {code}")[-250:]
+            finally:
+                c.close()
+
+        threading.Thread(
+            target=self._run_per_router,
+            args=("REBOOT všech routerů", worker, "REBOOT"),
+            daemon=True,
+        ).start()
+        return True
+
     def start_backup(self) -> bool:
         if self.operation.snapshot()["running"]:
             return False
@@ -693,15 +746,16 @@ echo LED_OK
         return True
 
     def _backup_worker(self) -> None:
-        if not self.operation.start("Záloha konfigurace OpenWrt", self.routers):
+        routers = self.runtime_routers()
+        if not self.operation.start("Záloha konfigurace OpenWrt", routers):
             return
         timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
         set_dir = BACKUP_DIR / timestamp
         set_dir.mkdir(parents=True, exist_ok=True)
-        total = len(self.routers)
+        total = len(routers)
         success = 0
         manifest = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "files": []}
-        for i, router in enumerate(self.routers):
+        for i, router in enumerate(routers):
             ip, name = router["ip"], router["name"]
             filename = router.get("backup_name") or f"{name}.tar.gz"
             remote = f"/tmp/{filename}"

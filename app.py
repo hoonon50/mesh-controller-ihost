@@ -40,6 +40,7 @@ def api_action(name: str):
     if name == "backup": ok = controller.start_backup()
     elif name == "update": ok = controller.start_update()
     elif name == "ping": ok = controller.start_ping()
+    elif name == "reboot": ok = controller.start_reboot()
     elif name == "led_on": ok = controller.start_led("on", (request.json or {}).get("target", "all"))
     elif name == "led_off": ok = controller.start_led("off", (request.json or {}).get("target", "all"))
     else: return jsonify({"ok": False, "error": "Neznámá akce"}), 404

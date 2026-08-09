@@ -7,6 +7,7 @@ import shlex
 import threading
 import time
 import zipfile
+import tarfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -197,6 +198,15 @@ class MeshController:
         return out, err, code
 
     @staticmethod
+    def command_bytes(client: paramiko.SSHClient, command: str, timeout: int = 60) -> Tuple[bytes, str, int]:
+        # Binární stdout pro OpenWrt zálohy; nevyžaduje SFTP subsystem.
+        _stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
+        blob = stdout.read()
+        err = stderr.read().decode("utf-8", errors="replace")
+        code = stdout.channel.recv_exit_status()
+        return blob, err, code
+
+    @staticmethod
     def script(client: paramiko.SSHClient, script: str, timeout: int = 60) -> Tuple[str, str, int]:
         stdin, stdout, stderr = client.exec_command("sh -s", timeout=timeout)
         stdin.write(script)
@@ -211,27 +221,43 @@ class MeshController:
             return json.loads(json.dumps(self._snapshot))
 
     def refresh_snapshot(self) -> Dict[str, Any]:
+        # Robustní klientská detekce: Wi-Fi station + FDB + ARP + DHCP fallback.
         node_states: List[Dict[str, Any]] = []
         raw_nodes: Dict[str, Dict[str, Any]] = {}
         mac_to_ip: Dict[str, str] = {}
-        clients: List[Dict[str, str]] = []
 
         for router in self.routers:
             ip = router["ip"]
             state = NodeState(ip=ip, name=router["name"])
-            data: Dict[str, Any] = {"mesh_peers": [], "freqs": {}, "local_macs": []}
+            data: Dict[str, Any] = {
+                "mesh_peers": [], "local_macs": [], "mesh_macs": [],
+                "wifi_clients": [], "neighbors": [], "leases": {}, "fdb": [], "ports": [],
+            }
             client = None
             try:
-                client = self.ssh_client(ip, 4)
+                client = self.ssh_client(ip, 5)
                 cmd = r'''printf 'HOST='; hostname 2>/dev/null || true
 printf 'UP='; cut -d. -f1 /proc/uptime 2>/dev/null || true
 printf 'MACS='; for f in /sys/class/net/*/address; do cat "$f" 2>/dev/null; done | tr '\n' ' '; echo
 printf 'WIRELESS_BEGIN\n'; ubus call network.wireless status 2>/dev/null || true; printf '\nWIRELESS_END\n'
 printf 'IW_BEGIN\n'; iw dev 2>/dev/null || true; printf '\nIW_END\n'
-printf 'NEIGH_BEGIN\n'; ip neigh show dev br-lan 2>/dev/null || true; printf '\nNEIGH_END\n'
+printf 'NEIGH_BEGIN\n'; ip -4 neigh show dev br-lan 2>/dev/null || ip neigh show dev br-lan 2>/dev/null || true; printf '\nNEIGH_END\n'
+printf 'LEASES_BEGIN\n'; cat /tmp/dhcp.leases 2>/dev/null || true; printf '\nLEASES_END\n'
+printf 'FDB_BEGIN\n'; if command -v bridge >/dev/null 2>&1; then echo __BRIDGE__; bridge fdb show 2>/dev/null || true; elif command -v brctl >/dev/null 2>&1; then echo __BRCTL__; brctl showmacs br-lan 2>/dev/null || true; else echo __NONE__; fi; printf '\nFDB_END\n'
+printf 'PORTS_BEGIN\n'; \
+for b in /sys/class/net/br-lan/brif/*; do \
+  [ -e "$b" ] || continue; \
+  p=$(basename "$b"); \
+  case "$p" in wlan*|phy*|mesh*|wds*|bat*|ifb*|veth*|tap*|tun*) continue ;; esac; \
+  oper=$(cat /sys/class/net/"$p"/operstate 2>/dev/null || echo unknown); \
+  carrier=$(cat /sys/class/net/"$p"/carrier 2>/dev/null || echo 0); \
+  speed=$(cat /sys/class/net/"$p"/speed 2>/dev/null || true); \
+  printf '%s\t%s\t%s\t%s\n' "$p" "$oper" "$carrier" "$speed"; \
+done; printf 'PORTS_END\n'
 '''
-                out, err, code = self.command(client, cmd, 15)
+                out, _err, _code = self.command(client, cmd, 20)
                 state.online = True
+
                 host = re.search(r"^HOST=(.*)$", out, re.M)
                 up = re.search(r"^UP=(.*)$", out, re.M)
                 macs = re.search(r"^MACS=(.*)$", out, re.M)
@@ -240,107 +266,279 @@ printf 'NEIGH_BEGIN\n'; ip neigh show dev br-lan 2>/dev/null || true; printf '\n
                     sec = int(up.group(1).strip())
                     state.uptime = f"{sec // 86400}d {(sec % 86400) // 3600}h"
                 if macs:
-                    data["local_macs"] = [m.lower() for m in MAC_RE.findall(macs.group(1))]
-                    for m in data["local_macs"]:
-                        mac_to_ip[m] = ip
+                    data["local_macs"] = sorted(set(m.lower() for m in MAC_RE.findall(macs.group(1))))
+                    for mac in data["local_macs"]:
+                        mac_to_ip[mac] = ip
 
                 w = re.search(r"WIRELESS_BEGIN\n(.*?)\nWIRELESS_END", out, re.S)
-                wireless_json = {}
-                if w:
-                    try:
-                        wireless_json = json.loads(w.group(1).strip() or "{}")
-                    except Exception:
-                        wireless_json = {}
+                try:
+                    wireless_json = json.loads(w.group(1).strip() or "{}") if w else {}
+                except Exception:
+                    wireless_json = {}
+
+                iface_info: Dict[str, Dict[str, str]] = {}
+                if isinstance(wireless_json, dict):
+                    for radio, radio_data in wireless_json.items():
+                        if not isinstance(radio_data, dict):
+                            continue
+                        radio_cfg = radio_data.get("config", {}) or {}
+                        band_raw = str(radio_cfg.get("band") or radio_cfg.get("hwmode") or radio)
+                        for iface in radio_data.get("interfaces", []) or []:
+                            if not isinstance(iface, dict):
+                                continue
+                            cfg = iface.get("config", {}) or {}
+                            ifname = str(iface.get("ifname") or "").strip()
+                            if not ifname:
+                                continue
+                            iface_info[ifname] = {
+                                "mode": str(cfg.get("mode") or "").lower(),
+                                "ssid": str(cfg.get("ssid") or cfg.get("mesh_id") or ""),
+                                "band": band_raw,
+                            }
+
                 iw_match = re.search(r"IW_BEGIN\n(.*?)\nIW_END", out, re.S)
                 iw_text = iw_match.group(1) if iw_match else ""
-                iface_blocks = re.split(r"\n\s*Interface\s+", "\n" + iw_text)
-                mesh_ifaces: List[str] = []
-                for block in iface_blocks[1:]:
+                for block in re.split(r"\n\s*Interface\s+", "\n" + iw_text)[1:]:
                     lines = block.strip().splitlines()
                     if not lines:
                         continue
                     ifname = lines[0].strip()
                     body = "\n".join(lines[1:])
+                    info = iface_info.setdefault(ifname, {"mode": "", "ssid": "", "band": ""})
                     if re.search(r"\btype\s+mesh point\b", body):
-                        mesh_ifaces.append(ifname)
-                    freq = re.search(r"\bchannel\s+\d+\s+\((\d+)\s+MHz\)", body)
-                    if freq:
-                        data["freqs"][ifname] = int(freq.group(1))
+                        info["mode"] = "mesh"
+                    elif re.search(r"\btype\s+AP\b", body, re.I) and not info.get("mode"):
+                        info["mode"] = "ap"
 
-                # fallback detect mesh interfaces from ubus
-                for radio_data in wireless_json.values() if isinstance(wireless_json, dict) else []:
-                    if not isinstance(radio_data, dict):
+                for ifname, info in iface_info.items():
+                    mode = info.get("mode", "")
+                    if mode not in {"ap", "mesh", "mesh_point", "mp"}:
                         continue
-                    for iface in radio_data.get("interfaces", []) or []:
-                        cfg = iface.get("config", {}) or {}
-                        if str(cfg.get("mode", "")).lower() == "mesh":
-                            ifname = str(iface.get("ifname", "")).strip()
-                            if ifname and ifname not in mesh_ifaces:
-                                mesh_ifaces.append(ifname)
-
-                for ifname in mesh_ifaces:
                     safe_if = shlex.quote(ifname)
-                    peer_out, _, _ = self.command(client, f"iw dev {safe_if} station dump 2>/dev/null || true", 8)
+                    iface_mac_out, _, _ = self.command(client, f"cat /sys/class/net/{safe_if}/address 2>/dev/null || true", 5)
+                    iface_macs = [m.lower() for m in MAC_RE.findall(iface_mac_out)]
+                    if mode in {"mesh", "mesh_point", "mp"}:
+                        data["mesh_macs"].extend(iface_macs)
+
+                    station_out, _, _ = self.command(client, f"iw dev {safe_if} station dump 2>/dev/null || true", 10)
                     current: Optional[Dict[str, Any]] = None
-                    for line in peer_out.splitlines():
-                        m = re.match(r"^Station\s+([0-9a-f:]{17})", line.strip(), re.I)
+                    stations: List[Dict[str, Any]] = []
+                    for line in station_out.splitlines():
+                        text = line.strip()
+                        m = re.match(r"^Station\s+([0-9a-f:]{17})", text, re.I)
                         if m:
                             if current:
-                                data["mesh_peers"].append(current)
-                            current = {"mac": m.group(1).lower(), "signal": None, "speed": "", "freq": data["freqs"].get(ifname), "ifname": ifname}
+                                stations.append(current)
+                            current = {"mac": m.group(1).lower(), "signal": None, "tx": "", "rx": ""}
                             continue
                         if not current:
                             continue
-                        s = re.match(r"^signal:\s*(-?\d+)", line.strip())
-                        if s:
-                            current["signal"] = int(s.group(1))
-                        t = re.match(r"^tx bitrate:\s*([0-9.]+)\s*MBit/s", line.strip(), re.I)
-                        if t:
-                            current["speed"] = f"{t.group(1)} Mbit/s"
+                        sig = re.match(r"^signal(?: avg)?:\s*(-?\d+)", text, re.I)
+                        if sig and current["signal"] is None:
+                            current["signal"] = int(sig.group(1))
+                        tx = re.match(r"^tx bitrate:\s*([^\n]+)", text, re.I)
+                        if tx:
+                            current["tx"] = tx.group(1).strip()
+                        rx = re.match(r"^rx bitrate:\s*([^\n]+)", text, re.I)
+                        if rx:
+                            current["rx"] = rx.group(1).strip()
                     if current:
-                        data["mesh_peers"].append(current)
+                        stations.append(current)
+
+                    if mode == "ap":
+                        for sta in stations:
+                            data["wifi_clients"].append({
+                                "mac": sta["mac"], "ifname": ifname,
+                                "ssid": info.get("ssid", ""), "signal": sta.get("signal"),
+                                "tx": sta.get("tx", ""), "rx": sta.get("rx", ""),
+                            })
+                    else:
+                        for sta in stations:
+                            data["mesh_peers"].append({
+                                "mac": sta["mac"], "signal": sta.get("signal"),
+                                "speed": sta.get("tx", ""), "ifname": ifname,
+                            })
 
                 neigh_match = re.search(r"NEIGH_BEGIN\n(.*?)\nNEIGH_END", out, re.S)
-                neigh_text = neigh_match.group(1) if neigh_match else ""
-                for line in neigh_text.splitlines():
-                    m = re.search(r"^(\S+)\s+dev\s+br-lan.*?lladdr\s+([0-9a-f:]{17})\s+(\S+)", line, re.I)
-                    if m and m.group(3).upper() not in {"FAILED", "INCOMPLETE"}:
-                        clients.append({"node": router["name"], "node_ip": ip, "ip": m.group(1), "mac": m.group(2).lower(), "type": "LAN/Wi-Fi"})
-                state.clients = sum(1 for c in clients if c["node_ip"] == ip)
+                for line in (neigh_match.group(1) if neigh_match else "").splitlines():
+                    m = re.search(r"^(\S+)\s+dev\s+(\S+).*?\blladdr\s+([0-9a-f:]{17})\b(?:.*?\s([A-Z]+))?$", line.strip(), re.I)
+                    if not m:
+                        continue
+                    nip, dev, mac, nstate = m.groups()
+                    nstate = (nstate or "UNKNOWN").upper()
+                    if nstate in {"FAILED", "INCOMPLETE", "NOARP", "NONE"}:
+                        continue
+                    data["neighbors"].append({"ip": nip, "dev": dev, "mac": mac.lower(), "state": nstate})
+
+                lease_match = re.search(r"LEASES_BEGIN\n(.*?)\nLEASES_END", out, re.S)
+                for line in (lease_match.group(1) if lease_match else "").splitlines():
+                    parts = line.split()
+                    if len(parts) < 4 or not MAC_RE.fullmatch(parts[1]):
+                        continue
+                    data["leases"][parts[1].lower()] = {
+                        "ip": parts[2], "hostname": "" if parts[3] == "*" else parts[3]
+                    }
+
+                fdb_match = re.search(r"FDB_BEGIN\n(.*?)\nFDB_END", out, re.S)
+                fdb_lines = (fdb_match.group(1) if fdb_match else "").splitlines()
+                method = fdb_lines[0].strip() if fdb_lines else "__NONE__"
+                for line in fdb_lines[1:]:
+                    text = line.strip()
+                    if not text:
+                        continue
+                    if method == "__BRIDGE__":
+                        m = re.match(r"^([0-9a-f:]{17})\s+dev\s+(\S+)", text, re.I)
+                        if not m:
+                            continue
+                        mac, port = m.group(1).lower(), m.group(2)
+                        flags = set(text.lower().split())
+                        if flags.intersection({"self", "permanent", "local"}):
+                            continue
+                        if port.lower().startswith(("wlan", "mesh", "phy")):
+                            continue
+                        data["fdb"].append({"mac": mac, "port": port})
+                    elif method == "__BRCTL__":
+                        m = re.match(r"^(\d+)\s+([0-9a-f:]{17})\s+(yes|no)\s+", text, re.I)
+                        if m and m.group(3).lower() == "no":
+                            data["fdb"].append({"mac": m.group(2).lower(), "port": "br-lan"})
+
+                ports_match = re.search(r"PORTS_BEGIN\n(.*?)\nPORTS_END", out, re.S)
+                for line in (ports_match.group(1) if ports_match else "").splitlines():
+                    parts = line.strip().split("\t")
+                    if len(parts) < 4:
+                        parts = line.strip().split()
+                    if len(parts) < 3:
+                        continue
+                    port = parts[0].strip()
+                    oper = parts[1].strip().lower()
+                    carrier = parts[2].strip() == "1"
+                    speed_raw = parts[3].strip() if len(parts) > 3 else ""
+                    try:
+                        speed = int(speed_raw) if int(speed_raw) > 0 else None
+                    except (ValueError, TypeError):
+                        speed = None
+                    data["ports"].append({
+                        "name": port,
+                        "up": bool(carrier or oper == "up"),
+                        "operstate": oper,
+                        "speed_mbps": speed,
+                    })
+
             except Exception as exc:
                 state.error = str(exc)
+                state.online = False
             finally:
                 if client:
                     client.close()
             raw_nodes[ip] = data
             node_states.append(asdict(state))
 
+        mesh_mac_to_ip: Dict[str, str] = dict(mac_to_ip)
+        for node_ip, data in raw_nodes.items():
+            for mac in data.get("mesh_macs", []):
+                mesh_mac_to_ip[mac] = node_ip
+
         links_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for source_ip, data in raw_nodes.items():
             for peer in data.get("mesh_peers", []):
-                target_ip = mac_to_ip.get(peer.get("mac", ""))
+                target_ip = mesh_mac_to_ip.get(peer.get("mac", ""))
                 if not target_ip or target_ip == source_ip:
                     continue
                 key = tuple(sorted((source_ip, target_ip)))
-                link = links_by_key.setdefault(key, {
-                    "a": key[0], "b": key[1], "signals": [], "speeds": [], "freqs": []
-                })
+                link = links_by_key.setdefault(key, {"a": key[0], "b": key[1], "signals": [], "speeds": []})
                 if peer.get("signal") is not None:
                     link["signals"].append(peer["signal"])
-                if peer.get("speed"):
-                    try:
-                        link["speeds"].append(float(str(peer["speed"]).split()[0]))
-                    except Exception:
-                        pass
-                if peer.get("freq"):
-                    link["freqs"].append(int(peer["freq"]))
+                speed_text = str(peer.get("speed") or "")
+                sm = re.search(r"([0-9.]+)\s*MBit/s", speed_text, re.I)
+                if sm:
+                    link["speeds"].append(float(sm.group(1)))
 
         links: List[Dict[str, Any]] = []
         for link in links_by_key.values():
             signal = round(sum(link["signals"]) / len(link["signals"])) if link["signals"] else None
             speed = max(link["speeds"]) if link["speeds"] else None
-            freq = round(sum(link["freqs"]) / len(link["freqs"])) if link["freqs"] else None
-            links.append({"a": link["a"], "b": link["b"], "dbm": signal, "speed_mbps": speed, "mhz": freq})
+            links.append({"a": link["a"], "b": link["b"], "dbm": signal, "speed_mbps": speed})
+
+        local_macs = {m for data in raw_nodes.values() for m in data.get("local_macs", [])}
+        mesh_macs = {m for data in raw_nodes.values() for m in data.get("mesh_macs", [])}
+        lease_map: Dict[str, Dict[str, str]] = {}
+        neigh_ip: Dict[str, str] = {}
+        for data in raw_nodes.values():
+            lease_map.update(data.get("leases", {}))
+            for n in data.get("neighbors", []):
+                neigh_ip.setdefault(n["mac"], n["ip"])
+
+        clients_by_mac: Dict[str, Dict[str, Any]] = {}
+        for router in self.routers:
+            data = raw_nodes.get(router["ip"], {})
+            for wclient in data.get("wifi_clients", []):
+                mac = wclient["mac"]
+                if mac in local_macs or mac in mesh_macs:
+                    continue
+                lease = lease_map.get(mac, {})
+                details = []
+                if wclient.get("ssid"):
+                    details.append(wclient["ssid"])
+                if wclient.get("signal") is not None:
+                    details.append(f"{wclient['signal']} dBm")
+                clients_by_mac[mac] = {
+                    "node": router["name"], "node_ip": router["ip"],
+                    "ip": lease.get("ip") or neigh_ip.get(mac, ""),
+                    "mac": mac, "hostname": lease.get("hostname", ""),
+                    "type": "Wi-Fi", "detail": " · ".join(details),
+                }
+
+        for router in self.routers:
+            data = raw_nodes.get(router["ip"], {})
+            for fdb in data.get("fdb", []):
+                mac = fdb["mac"]
+                if mac in clients_by_mac or mac in local_macs or mac in mesh_macs:
+                    continue
+                lease = lease_map.get(mac, {})
+                clients_by_mac[mac] = {
+                    "node": router["name"], "node_ip": router["ip"],
+                    "ip": lease.get("ip") or neigh_ip.get(mac, ""),
+                    "mac": mac, "hostname": lease.get("hostname", ""),
+                    "type": "LAN", "detail": fdb.get("port", "br-lan"),
+                }
+
+        for router in self.routers:
+            data = raw_nodes.get(router["ip"], {})
+            for n in data.get("neighbors", []):
+                mac = n["mac"]
+                if mac in clients_by_mac or mac in local_macs or mac in mesh_macs:
+                    continue
+                lease = lease_map.get(mac, {})
+                clients_by_mac[mac] = {
+                    "node": router["name"], "node_ip": router["ip"],
+                    "ip": lease.get("ip") or n.get("ip", ""), "mac": mac,
+                    "hostname": lease.get("hostname", ""), "type": "Neurčené",
+                    "detail": f"ARP {n.get('state', '')}".strip(),
+                }
+
+        main_name = self.routers[0]["name"] if self.routers else "ROUTER"
+        main_ip = self.routers[0]["ip"] if self.routers else "192.168.30.1"
+        for mac, lease in lease_map.items():
+            if mac in clients_by_mac or mac in local_macs or mac in mesh_macs:
+                continue
+            clients_by_mac[mac] = {
+                "node": main_name, "node_ip": main_ip, "ip": lease.get("ip", ""),
+                "mac": mac, "hostname": lease.get("hostname", ""),
+                "type": "DHCP", "detail": "lease",
+            }
+
+        clients = sorted(clients_by_mac.values(), key=lambda c: (c.get("node_ip", ""), c.get("ip", ""), c["mac"]))
+        counts: Dict[str, int] = {}
+        for item in clients:
+            counts[item.get("node_ip", "")] = counts.get(item.get("node_ip", ""), 0) + 1
+        for state in node_states:
+            state["clients"] = counts.get(state["ip"], 0)
+            ports = raw_nodes.get(state["ip"], {}).get("ports", [])
+            def _port_sort_key(item: Dict[str, Any]) -> Tuple[Any, ...]:
+                name = str(item.get("name", ""))
+                m = re.match(r"^(.*?)(\d+)$", name)
+                return (m.group(1).lower(), int(m.group(2))) if m else (name.lower(), 0)
+            state["ports"] = sorted(ports, key=_port_sort_key)
 
         snapshot = {"nodes": node_states, "links": links, "clients": clients, "updated": time.time()}
         with self._status_lock:
@@ -511,18 +709,30 @@ echo LED_OK
             self.operation.update(percent=int(i * 100 / total), current=f"Zálohuji {name} ({ip})…", ip=ip, state="PROBÍHÁ", log=f"{name}: vytvářím standardní sysupgrade archiv")
             client = None
             try:
-                client = self.ssh_client(ip, 7)
-                out, err, code = self.command(client, f"umask 077; rm -f {shlex.quote(remote)}; sysupgrade -b {shlex.quote(remote)}; test -s {shlex.quote(remote)}", 120)
+                client = self.ssh_client(ip, 8)
+                out, err, code = self.command(client, f"umask 077; rm -f {shlex.quote(remote)}; sysupgrade -b {shlex.quote(remote)}; test -s {shlex.quote(remote)}", 180)
                 if code != 0:
                     raise RuntimeError((err or out or f"sysupgrade exit {code}").strip())
-                sftp = client.open_sftp()
+                client.close()
+                client = self.ssh_client(ip, 8)
+                blob, berr, bcode = self.command_bytes(client, f"cat {shlex.quote(remote)}", 120)
+                if bcode != 0:
+                    raise RuntimeError((berr or f"čtení archivu exit {bcode}").strip())
+                local.write_bytes(blob)
                 try:
-                    sftp.get(remote, str(local))
-                finally:
-                    sftp.close()
-                self.command(client, f"rm -f {shlex.quote(remote)}", 10)
+                    self.command(client, f"rm -f {shlex.quote(remote)}", 10)
+                except Exception:
+                    pass
                 if not local.exists() or local.stat().st_size < 100:
                     raise RuntimeError("Stažený archiv je prázdný nebo neúplný")
+                if local.read_bytes()[:2] != b"\x1f\x8b":
+                    raise RuntimeError("Stažený soubor není platný gzip archiv")
+                try:
+                    with tarfile.open(local, "r:gz") as tf:
+                        if not tf.getmembers():
+                            raise RuntimeError("Archiv neobsahuje žádné soubory")
+                except tarfile.TarError as exc:
+                    raise RuntimeError(f"Neplatný OpenWrt archiv: {exc}") from exc
                 success += 1
                 manifest["files"].append({"ip": ip, "name": name, "file": filename, "size": local.stat().st_size, "ok": True})
                 self.operation.update(ip=ip, state="HOTOVO", detail=filename, log=f"{name}: {filename} uložen ({local.stat().st_size} B)")

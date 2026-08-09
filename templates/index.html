@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OpenWrt Mesh Controller PRO v3.3</title>
+  <title>OpenWrt Mesh Controller PRO v3.5</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header>
   <div>
-    <h1>OpenWrt Mesh Controller PRO <span>v3.3</span></h1>
+    <h1>OpenWrt Mesh Controller PRO <span>v3.5</span></h1>
     <p>SONOFF iHost · 192.168.30.0/24</p>
   </div>
   <button id="refreshBtn" class="secondary">Obnovit stav</button>
@@ -21,7 +21,7 @@
   <section class="grid-main">
     <article class="card topology-card">
       <div class="card-head">
-        <div><h2>Živá topologie</h2><p>U spojů se zobrazuje pouze dBm · rychlost · MHz</p></div>
+        <div><h2>Živá topologie</h2><p>U spojů se zobrazuje jen dBm a rychlost; popisky se automaticky rozmisťují mimo uzly.</p></div>
         <div class="legend"><i class="good"></i> dobrý <i class="mid"></i> střední <i class="bad"></i> slabý</div>
       </div>
       <div id="topology" class="topology">
@@ -38,6 +38,13 @@
       <div class="op-meta"><span id="opTime">Čas: 00:00</span><span id="opResult"></span></div>
       <div id="opLog" class="op-log"></div>
     </article>
+  </section>
+
+  <section class="card ports-card">
+    <div class="card-head">
+      <div><h2>LAN porty</h2><p>Živý stav fyzických portů jednotlivých routerů – rychlost linky a UP/DOWN.</p></div>
+    </div>
+    <div id="portsGrid" class="ports-grid"></div>
   </section>
 
   <section class="grid-bottom">
@@ -71,8 +78,8 @@
   </section>
 
   <section class="card clients-card">
-    <div class="card-head"><div><h2>Klienti</h2><p>Aktuálně známá zařízení z br-lan jednotlivých uzlů.</p></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Uzel</th><th>IP</th><th>MAC</th><th>Typ</th></tr></thead><tbody id="clientsBody"></tbody></table></div>
+    <div class="card-head"><div><h2>Klienti</h2><p>Wi-Fi stanice + FDB/LAN + ARP + DHCP fallback.</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Uzel</th><th>Zařízení</th><th>IP</th><th>MAC</th><th>Typ</th><th>Detail</th></tr></thead><tbody id="clientsBody"></tbody></table></div>
   </section>
 </main>
 <script src="/static/app.js"></script>

@@ -4,7 +4,7 @@ import re
 root = Path('/app')
 app_py = root / 'app.py'
 text = app_py.read_text(encoding='utf-8')
-hook = '''\n# v3.8.6 – daily schedule + reliable automatic reports\nfrom owut_manager import register_owut_manager\nregister_owut_manager(app, controller)\n'''
+hook = '''\n# v3.8.7 – daily schedule + reliable automatic reports\nfrom owut_manager import register_owut_manager\nregister_owut_manager(app, controller)\n'''
 if 'register_owut_manager(app, controller)' not in text:
     marker = '\nif __name__ == "__main__":'
     marker2 = "\nif __name__ == '__main__':"
@@ -20,8 +20,8 @@ if 'register_owut_manager(app, controller)' not in text:
 index = root / 'templates' / 'index.html'
 html = index.read_text(encoding='utf-8')
 
-css = '<link rel="stylesheet" href="/static/owut_manager.css?v=3.8.6">'
-script = '<script src="/static/owut_manager.js?v=3.8.6"></script>'
+css = '<link rel="stylesheet" href="/static/owut_manager.css?v=3.8.7">'
+script = '<script src="/static/owut_manager.js?v=3.8.7"></script>'
 
 html = re.sub(r'<link rel="stylesheet" href="/static/owut_manager\.css\?v=[^"]+">', '', html)
 html = re.sub(r'<script src="/static/owut_manager\.js\?v=[^"]+"></script>', '', html)

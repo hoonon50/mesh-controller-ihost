@@ -63,6 +63,31 @@ _operation: Dict[str, Any] = {
     "result": None,
 }
 
+_upgrade_summary_lock = threading.RLock()
+_last_upgrade_summary: Dict[str, Any] = {}
+
+
+def _store_upgrade_summary(run_id: str, automatic: bool, overall_ok: bool, rows: List[Dict[str, Any]], backup_id: str, extra: str) -> None:
+    global _last_upgrade_summary
+    with _upgrade_summary_lock:
+        _last_upgrade_summary = {
+            "run_id": str(run_id or ""),
+            "automatic": bool(automatic),
+            "overall_ok": bool(overall_ok),
+            "rows": json.loads(json.dumps(rows, ensure_ascii=False)),
+            "backup_id": str(backup_id or ""),
+            "extra": str(extra or ""),
+            "finished": _now_text(),
+        }
+
+
+def _get_upgrade_summary(run_id: str) -> Dict[str, Any]:
+    with _upgrade_summary_lock:
+        data = json.loads(json.dumps(_last_upgrade_summary, ensure_ascii=False))
+    if str(data.get("run_id") or "") != str(run_id or ""):
+        return {}
+    return data
+
 
 def _now_text() -> str:
     return datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -837,8 +862,11 @@ def _deliver_upgrade_report_safe(
             return False, f"Odeslání reportu selhalo ({exc}); uložení do fronty selhalo ({queue_exc})."
 
 
-def _upgrade_worker(controller, automatic: bool = False) -> None:
+def _upgrade_worker(controller, automatic: bool = False, send_report: bool = True, run_id: str = "") -> None:
     if _snapshot_operation().get("running"):
+        # U plánované operace uložíme i stav SKIPPED, aby wrapper mohl poslat report.
+        if run_id:
+            _store_upgrade_summary(run_id, automatic, False, [], "", "Plánovaná aktualizace nebyla spuštěna, protože už probíhala jiná operace.")
         return
     _op_reset("auto-upgrade" if automatic else "manual-upgrade", "Příprava OWUT aktualizace…")
     rows: List[Dict[str, Any]] = []
@@ -960,20 +988,22 @@ def _upgrade_worker(controller, automatic: bool = False) -> None:
         _op_log(f"CHYBA: {exc}")
         _op_finish(False, f"OWUT aktualizace nedokončena: {exc}", {"ok": False, "rows": rows, "backup_id": backup_id})
     finally:
-        mail_ok, mail_detail = _deliver_upgrade_report_safe(
-            controller, automatic, overall_ok, rows, backup_id, extra
-        )
-        _op_log(f"Gmail report: {'odeslán' if mail_ok else 'neodeslán'} – {mail_detail}")
-        if automatic:
-            try:
-                settings = _load_settings()
-                settings["last_auto_result"] = "ok" if overall_ok else "error"
-                settings["last_auto_mail_ok"] = bool(mail_ok)
-                settings["last_auto_mail_detail"] = str(mail_detail)[:500]
-                settings["last_auto_finished"] = _now_text()
-                _save_settings(settings)
-            except Exception:
-                pass
+        _store_upgrade_summary(run_id, automatic, overall_ok, rows, backup_id, extra)
+        if send_report:
+            mail_ok, mail_detail = _deliver_upgrade_report_safe(
+                controller, automatic, overall_ok, rows, backup_id, extra
+            )
+            _op_log(f"Gmail report: {'odeslán' if mail_ok else 'neodeslán'} – {mail_detail}")
+            if automatic:
+                try:
+                    settings = _load_settings()
+                    settings["last_auto_result"] = "ok" if overall_ok else "error"
+                    settings["last_auto_mail_ok"] = bool(mail_ok)
+                    settings["last_auto_mail_detail"] = str(mail_detail)[:500]
+                    settings["last_auto_finished"] = _now_text()
+                    _save_settings(settings)
+                except Exception:
+                    pass
 
 
 def _check_worker(controller) -> None:
@@ -1097,6 +1127,63 @@ def _reboot_worker(controller, targets: List[Tuple[str, str]]) -> None:
         _op_finish(False, f"Restart nedokončen: {exc}", {"ok": False, "rows": rows})
 
 
+def _scheduled_upgrade_worker(controller, run_id: str) -> None:
+    """Plánovaná cesta: OWUT a e-mail jsou dvě oddělené fáze.
+
+    Tím se automatický report neposílá z vnitřku upgrade workeru, ale až po jeho
+    úplném návratu. Ruční aktualizace používá původní přímou cestu.
+    """
+    mail_ok = False
+    mail_detail = "Report nebyl odeslán."
+    try:
+        _upgrade_worker(controller, automatic=True, send_report=False, run_id=run_id)
+        summary = _get_upgrade_summary(run_id)
+        if not summary:
+            summary = {
+                "overall_ok": False,
+                "rows": [],
+                "backup_id": "",
+                "extra": "Plánovaná aktualizace skončila bez dostupného výsledku.",
+            }
+        mail_ok, mail_detail = _deliver_upgrade_report_safe(
+            controller,
+            True,
+            bool(summary.get("overall_ok")),
+            list(summary.get("rows") or []),
+            str(summary.get("backup_id") or ""),
+            str(summary.get("extra") or ""),
+        )
+        _op_log(f"Automatický Gmail report: {'odeslán' if mail_ok else 'neodeslán'} – {mail_detail}")
+    except Exception as exc:
+        # Ani neočekávaná chyba wrapperu nesmí report úplně ztratit.
+        fallback = (
+            "OpenWRT MESH CONTROLLER PRO\n\n"
+            "AUTOMATICKÁ OWUT AKTUALIZACE\n"
+            f"Datum: {_now_text()}\n"
+            "Výsledek: CHYBA / NEDOKONČENO\n"
+            f"Detail scheduleru: {exc}"
+        )
+        try:
+            mail_ok, mail_detail = _send_report_or_queue(
+                "CHYBA – OpenWRT MESH plánovaná aktualizace", fallback, ""
+            )
+        except Exception as mail_exc:
+            mail_ok = False
+            mail_detail = f"{exc}; navíc selhalo odeslání reportu: {mail_exc}"
+    finally:
+        try:
+            settings = _load_settings()
+            summary = _get_upgrade_summary(run_id)
+            settings["last_auto_result"] = "ok" if summary.get("overall_ok") else "error"
+            settings["last_auto_mail_ok"] = bool(mail_ok)
+            settings["last_auto_mail_detail"] = str(mail_detail)[:500]
+            settings["last_auto_finished"] = _now_text()
+            settings["last_auto_run_id"] = run_id
+            _save_settings(settings)
+        except Exception:
+            pass
+
+
 def _scheduler_loop(controller) -> None:
     last_mail_retry = 0.0
     while True:
@@ -1121,12 +1208,25 @@ def _scheduler_loop(controller) -> None:
                     mode = "daily" if weekday == -1 else "weekly"
                 today = now.strftime("%Y-%m-%d")
                 day_matches = True if mode == "daily" else now.weekday() == weekday
-                due = day_matches and now.hour == hh and now.minute == mm
+                scheduled_minute = hh * 60 + mm
+                current_minute = now.hour * 60 + now.minute
+                # Pětiminutové okno zabrání vynechání úlohy, když scheduler právě
+                # v přesné minutě dokončuje retry e-mailu nebo jinou krátkou práci.
+                due = day_matches and scheduled_minute <= current_minute < scheduled_minute + 5
                 if due and settings.get("last_auto_date") != today and not _snapshot_operation().get("running"):
+                    run_id = now.strftime("%Y%m%d-%H%M%S")
                     settings["last_auto_date"] = today
                     settings["last_auto_started"] = _now_text()
+                    settings["last_auto_run_id"] = run_id
+                    settings["last_auto_mail_ok"] = None
+                    settings["last_auto_mail_detail"] = "Čekám na dokončení plánované aktualizace."
                     _save_settings(settings)
-                    threading.Thread(target=_upgrade_worker, args=(controller, True), daemon=True, name="owut-auto-upgrade").start()
+                    threading.Thread(
+                        target=_scheduled_upgrade_worker,
+                        args=(controller, run_id),
+                        daemon=True,
+                        name="owut-auto-upgrade",
+                    ).start()
         except Exception:
             pass
         time.sleep(30)
@@ -1145,6 +1245,10 @@ def register_owut_manager(app, controller) -> None:
     def owut_settings_save():
         incoming = request.get_json(silent=True) or {}
         data = _load_settings()
+        old_auto_enabled = bool(data.get("auto_enabled", False))
+        old_schedule_mode = str(data.get("schedule_mode") or "weekly")
+        old_weekday = int(data.get("weekday", 6)) if str(data.get("weekday", 6)).lstrip("-").isdigit() else 6
+        old_time = str(data.get("time") or "03:00")
         data["auto_enabled"] = bool(incoming.get("auto_enabled", False))
         mode = str(incoming.get("schedule_mode", data.get("schedule_mode", "weekly"))).strip().lower()
         if mode not in {"daily", "weekly"}:
@@ -1176,6 +1280,22 @@ def register_owut_manager(app, controller) -> None:
         if data.get("auto_enabled"):
             if not str(data.get("gmail_from") or "").strip() or not str(data.get("gmail_to") or "").strip() or not str(data.get("gmail_app_password") or "").strip():
                 return jsonify({"ok": False, "error": "Pro automatickou aktualizaci nastav Gmail odesílatele, příjemce a heslo aplikace."}), 400
+
+        # Změna plánování nebo nové zapnutí automatiky odemkne dnešní běh.
+        # Gmail/HTML nastavení samo o sobě nový OWUT běh nevyvolá.
+        schedule_changed = (
+            old_schedule_mode != str(data.get("schedule_mode") or "weekly")
+            or old_weekday != int(data.get("weekday", 6))
+            or old_time != str(data.get("time") or "03:00")
+            or (not old_auto_enabled and bool(data.get("auto_enabled")))
+        )
+        if schedule_changed:
+            data["last_auto_date"] = ""
+            data["last_auto_started"] = ""
+            data["last_auto_finished"] = ""
+            data["last_auto_mail_ok"] = None
+            data["last_auto_mail_detail"] = "Plán změněn – čekám na další plánovaný běh."
+
         _save_settings(data)
         return jsonify({"ok": True, "settings": _public_settings(data)})
 

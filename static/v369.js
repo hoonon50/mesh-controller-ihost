@@ -1,8 +1,21 @@
 (() => {
   'use strict';
 
-  let healthByIp = {};
-  let injectTimer = null;
+  // Poslední známé hodnoty držíme v JS paměti. Běžný 30s refresh topologie
+  // je nesmí shodit – CPU/UPTIME se fyzicky načítá jen jednou za 10 minut.
+  const ROUTER_IPS = [
+    '192.168.30.1',
+    '192.168.30.2',
+    '192.168.30.3',
+    '192.168.30.4',
+    '192.168.30.5'
+  ];
+
+  const healthByIp = Object.fromEntries(
+    ROUTER_IPS.map(ip => [ip, {ip, cpu_temp: null, uptime: null}])
+  );
+
+  let injecting = false;
 
   function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -21,47 +34,58 @@
       const candidates = Array.from(root.querySelectorAll('*')).filter(el => {
         const txt = (el.textContent || '').trim();
         if (!txt.includes(ip) || !txt.includes('ONLINE')) return false;
-        if (txt.length > 260) return false;
+        if (txt.length > 300) return false;
         if (el.closest && el.closest('#lanPorts, .lan-ports, .ports-grid')) return false;
         return true;
       });
 
-      // Nejmenší element, který obsahuje IP + ONLINE, bývá vlastní dlaždice routeru.
       candidates.sort((a, b) => (a.textContent || '').length - (b.textContent || '').length);
       if (candidates.length) return candidates[0];
     }
     return null;
   }
 
+  function healthHtml(item) {
+    const temp = item && item.cpu_temp !== null && item.cpu_temp !== undefined
+      ? `${esc(item.cpu_temp)} °C`
+      : '—';
+    const uptime = item && item.uptime ? esc(item.uptime) : '—';
+
+    return (
+      `<div><strong>CPU</strong> ${temp}</div>` +
+      `<div><strong>UPTIME</strong> ${uptime}</div>`
+    );
+  }
+
+  function ensureHealthBox(card, item) {
+    if (!card) return;
+
+    // Pevný prostor = dlaždice se při normálním refreshi nesmrští a znovu
+    // neroztáhne. Hodnoty se jen přepíší uvnitř stejného prostoru.
+    card.classList.add('v369-health-card');
+
+    let box = card.querySelector(':scope > .v369-health');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'v369-health';
+      card.appendChild(box);
+    }
+
+    const wanted = healthHtml(item);
+    if (box.innerHTML !== wanted) box.innerHTML = wanted;
+  }
+
   function injectHealth() {
-    for (const [ip, item] of Object.entries(healthByIp)) {
-      const card = findNodeCard(ip);
-      if (!card) continue;
-
-      let box = card.querySelector(':scope > .v369-health');
-      if (!box) {
-        box = document.createElement('div');
-        box.className = 'v369-health';
-        box.style.marginTop = '4px';
-        box.style.paddingTop = '3px';
-        box.style.borderTop = '1px solid rgba(255,255,255,.10)';
-        box.style.fontSize = '10px';
-        box.style.lineHeight = '1.35';
-        box.style.color = '#e8e8ec';
-        box.style.whiteSpace = 'nowrap';
-        box.style.textAlign = 'left';
-        card.appendChild(box);
+    if (injecting) return;
+    injecting = true;
+    try {
+      for (const ip of ROUTER_IPS) {
+        const card = findNodeCard(ip);
+        if (!card) continue;
+        ensureHealthBox(card, healthByIp[ip]);
       }
-
-      const temp = item && item.cpu_temp !== null && item.cpu_temp !== undefined
-        ? `${esc(item.cpu_temp)} °C`
-        : '—';
-      const uptime = item && item.uptime ? esc(item.uptime) : '—';
-
-      const wanted =
-        `<div><strong style="color:#92929e">CPU</strong> ${temp}</div>` +
-        `<div><strong style="color:#92929e">UPTIME</strong> ${uptime}</div>`;
-      if (box.innerHTML !== wanted) box.innerHTML = wanted;
+    } finally {
+      injecting = false;
     }
   }
 
@@ -70,39 +94,49 @@
       const r = await fetch('/api/v369/router-health', {cache: 'no-store'});
       if (!r.ok) return;
       const data = await r.json();
-      healthByIp = {};
       for (const item of (data.routers || [])) {
-        if (item && item.ip) healthByIp[item.ip] = item;
+        if (!item || !item.ip || !healthByIp[item.ip]) continue;
+
+        // Když jeden 10min dotaz selže, zachováme poslední známou hodnotu.
+        // Nevracíme dlaždici zpět na prázdný stav.
+        if (item.cpu_temp !== null && item.cpu_temp !== undefined) {
+          healthByIp[item.ip].cpu_temp = item.cpu_temp;
+        }
+        if (item.uptime) healthByIp[item.ip].uptime = item.uptime;
       }
       injectHealth();
-    } catch (_) {}
-  }
-
-  function scheduleInject() {
-    if (injectTimer) clearTimeout(injectTimer);
-    injectTimer = setTimeout(injectHealth, 120);
+    } catch (_) {
+      // Síťová chyba nesmí odstranit poslední hodnoty z dlaždic.
+    }
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    // Rezervujeme prostor okamžitě, ještě před prvním SSH výsledkem.
+    injectHealth();
     loadHealth();
+
+    // Skutečný health refresh: 10 minut.
     setInterval(loadHealth, 600000);
 
+    // Hlavní aplikace překresluje topologii častěji. MutationObserver běží
+    // ještě před vykreslením dalšího frame, proto hodnoty vložíme PŘÍMO,
+    // bez předchozí 120ms prodlevy a bez viditelného bliknutí.
     const observer = new MutationObserver((mutations) => {
-      // Neodpovídej na vlastní změny CPU/UPTIME boxu – jinak vzniká zbytečná
-      // smyčka překreslování, která může působit jako blikání dlaždic.
+      if (injecting) return;
       const externalChange = mutations.some(m => {
         const target = m.target && m.target.nodeType === 1 ? m.target : null;
         if (target && target.closest && target.closest('.v369-health')) return false;
-        return Array.from(m.addedNodes || []).some(n => {
-          if (!n || n.nodeType !== 1) return true;
-          return !(n.matches?.('.v369-health') || n.closest?.('.v369-health'));
-        }) || Array.from(m.removedNodes || []).some(n => {
+
+        const changed = [...(m.addedNodes || []), ...(m.removedNodes || [])];
+        if (!changed.length) return false;
+        return changed.some(n => {
           if (!n || n.nodeType !== 1) return true;
           return !(n.matches?.('.v369-health') || n.closest?.('.v369-health'));
         });
       });
-      if (externalChange) scheduleInject();
+      if (externalChange) injectHealth();
     });
+
     observer.observe(document.body, {subtree: true, childList: true});
   });
 })();

@@ -5,7 +5,7 @@ root = Path('/app')
 # 1) Flask route pro CPU teplotu + uptime
 app_py = root / 'app.py'
 text = app_py.read_text(encoding='utf-8')
-hook = '''\n# v3.6.10 – CPU teplota + uptime v topologii\nfrom v369_extra import register_v369\nregister_v369(app, controller)\n'''
+hook = '''\n# v3.6.11 – CPU teplota + uptime v topologii\nfrom v369_extra import register_v369\nregister_v369(app, controller)\n'''
 if 'register_v369(app, controller)' not in text:
     marker = '\nif __name__ == "__main__":'
     marker2 = "\nif __name__ == '__main__':"
@@ -18,13 +18,27 @@ if 'register_v369(app, controller)' not in text:
         text += hook
     app_py.write_text(text, encoding='utf-8')
 
-# 2) JS overlay – načte health endpoint a doplní dvě řádky do router tile
+# 2) JS overlay + pevná výška health sekce
 index = root / 'templates' / 'index.html'
 html = index.read_text(encoding='utf-8')
-script = '<script src="/static/v369.js?v=3.6.10"></script>'
-if script not in html:
+style = '''<style id="v369-health-style">
+.v369-health-card{box-sizing:border-box!important;min-height:108px!important;}
+.v369-health{height:38px!important;min-height:38px!important;box-sizing:border-box!important;margin-top:4px!important;padding-top:3px!important;border-top:1px solid rgba(255,255,255,.10)!important;font-size:10px!important;line-height:15px!important;color:#e8e8ec!important;white-space:nowrap!important;text-align:left!important;overflow:hidden!important;}
+.v369-health strong{color:#92929e!important;font-weight:700!important;}
+</style>'''
+script = '<script src="/static/v369.js?v=3.6.11"></script>'
+if 'id="v369-health-style"' not in html:
+    if '</head>' in html:
+        html = html.replace('</head>', f'  {style}\n</head>')
+    else:
+        html = style + '\n' + html
+if '/static/v369.js' not in html:
     if '</body>' in html:
         html = html.replace('</body>', f'  {script}\n</body>')
     else:
         html += '\n' + script + '\n'
-    index.write_text(html, encoding='utf-8')
+else:
+    # Pokud by zdroj už script obsahoval, pouze přepíšeme cache verzi.
+    import re
+    html = re.sub(r'<script src="/static/v369\.js\?v=[^"]+"></script>', script, html)
+index.write_text(html, encoding='utf-8')

@@ -28,8 +28,8 @@ if marker not in app:
     APP.write_text(app, encoding="utf-8")
 
 html = INDEX.read_text(encoding="utf-8")
-css_tag = '<link rel="stylesheet" href="/static/wan_usage.css?v=3.8.9">'
-js_tag = '<script src="/static/wan_usage.js?v=3.8.9"></script>'
+css_tag = '<link rel="stylesheet" href="/static/wan_usage.css?v=3.8.10">'
+js_tag = '<script src="/static/wan_usage.js?v=3.8.10"></script>'
 
 if css_tag not in html:
     if "</head>" not in html:
@@ -42,4 +42,4 @@ if js_tag not in html:
     html = html.replace("</body>", f"  {js_tag}\n</body>", 1)
 
 INDEX.write_text(html, encoding="utf-8")
-print("v3.8.9: persistentní WAN DOWNLOAD/UPLOAD přidán do horní lišty")
+print("v3.8.10: WAN DOWNLOAD/UPLOAD – kompaktní horní dlaždice")

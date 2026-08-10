@@ -3,7 +3,7 @@ from pathlib import Path
 root = Path('/app')
 app_py = root / 'app.py'
 text = app_py.read_text(encoding='utf-8')
-hook = '''\n# v3.7.6 – safe layout hotfix\nfrom owut_manager import register_owut_manager\nregister_owut_manager(app, controller)\n'''
+hook = '''\n# v3.7.7 – Jinja CSS hotfix\nfrom owut_manager import register_owut_manager\nregister_owut_manager(app, controller)\n'''
 if 'register_owut_manager(app, controller)' not in text:
     marker = '\nif __name__ == "__main__":'
     marker2 = "\nif __name__ == '__main__':"
@@ -34,9 +34,9 @@ style = '''<style id="owut-manager-style">
 /* v3.7.4 – natvrdo 50/50, přebije původní layout karet */
 #maintenanceBackupRow.maintenance-backup-row-force{display:flex!important;flex-direction:row!important;flex-wrap:nowrap!important;align-items:stretch!important;width:100%!important;max-width:100%!important;gap:10px!important;box-sizing:border-box!important}
 #maintenanceBackupRow.maintenance-backup-row-force>.maintenance-backup-half{display:block!important;flex:1 1 0!important;flex-basis:0!important;width:0!important;min-width:0!important;max-width:none!important;grid-column:auto!important;grid-row:auto!important;align-self:stretch!important;height:auto!important;margin-top:0!important;margin-bottom:0!important;box-sizing:border-box!important}
-@media(max-width:640px){#maintenanceBackupRow.maintenance-backup-row-force{flex-direction:column!important}#maintenanceBackupRow.maintenance-backup-row-force>.maintenance-backup-half{width:100%!important;flex-basis:auto!important}}
+@media(max-width:640px){ #maintenanceBackupRow.maintenance-backup-row-force{flex-direction:column!important}#maintenanceBackupRow.maintenance-backup-row-force>.maintenance-backup-half{width:100%!important;flex-basis:auto!important}}
 </style>'''
-script = '<script src="/static/owut_manager.js?v=3.7.6"></script>'
+script = '<script src="/static/owut_manager.js?v=3.7.7"></script>'
 if 'id="owut-manager-style"' not in html:
     html = html.replace('</head>', f'  {style}\n</head>') if '</head>' in html else style + '\n' + html
 if '/static/owut_manager.js' not in html:

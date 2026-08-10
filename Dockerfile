@@ -19,6 +19,7 @@ RUN apt-get update \
 COPY . .
 RUN mkdir -p /data/backups \
     && python3 /app/v369_patch.py \
-    && python3 /app/owut_patch.py
+    && python3 /app/owut_patch.py \
+    && python3 -c "from jinja2 import Environment, FileSystemLoader; Environment(loader=FileSystemLoader('/app/templates')).get_template('index.html')"
 EXPOSE 8088
 CMD ["gunicorn", "--bind", "0.0.0.0:8088", "--workers", "1", "--threads", "8", "--timeout", "1900", "app:app"]

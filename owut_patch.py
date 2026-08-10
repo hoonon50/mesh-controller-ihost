@@ -4,7 +4,7 @@ import re
 root = Path('/app')
 app_py = root / 'app.py'
 text = app_py.read_text(encoding='utf-8')
-hook = '''\n# v3.8.0 – OWUT manager + safe static dashboard layout\nfrom owut_manager import register_owut_manager\nregister_owut_manager(app, controller)\n'''
+hook = '''\n# v3.8.1 – OWUT manager + balanced dashboard layout\nfrom owut_manager import register_owut_manager\nregister_owut_manager(app, controller)\n'''
 if 'register_owut_manager(app, controller)' not in text:
     marker = '\nif __name__ == "__main__":'
     marker2 = "\nif __name__ == '__main__':"
@@ -20,11 +20,9 @@ if 'register_owut_manager(app, controller)' not in text:
 index = root / 'templates' / 'index.html'
 html = index.read_text(encoding='utf-8')
 
-# External CSS = Jinja nikdy neuvidí CSS sekvence jako svoje tagy.
-css = '<link rel="stylesheet" href="/static/owut_manager.css?v=3.8.0">'
-script = '<script src="/static/owut_manager.js?v=3.8.0"></script>'
+css = '<link rel="stylesheet" href="/static/owut_manager.css?v=3.8.1">'
+script = '<script src="/static/owut_manager.js?v=3.8.1"></script>'
 
-# Odstranění případného starého odkazu z dřívějšího buildu.
 html = re.sub(r'<link rel="stylesheet" href="/static/owut_manager\.css\?v=[^"]+">', '', html)
 html = re.sub(r'<script src="/static/owut_manager\.js\?v=[^"]+"></script>', '', html)
 

@@ -1,6 +1,7 @@
-/* OpenWRT MESH CONTROLLER PRO v3.8.0 — OWUT + safe dashboard layout */
+/* OpenWRT MESH CONTROLLER PRO v3.8.1 — OWUT under topology */
 .owut-panel{margin:0;padding:13px;border:1px solid #34343c;border-radius:14px;background:#1a1a1e;color:#e8e8ec;box-sizing:border-box;width:100%;min-width:0}
 .owut-title{font-size:18px;font-weight:800;letter-spacing:.04em;margin-bottom:3px}
+.owut-auto-title{margin-bottom:11px}
 .owut-sub{font-size:12px;color:#92929e;margin-bottom:13px}
 .owut-status-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-bottom:12px}
 .owut-node{padding:7px;border:1px solid #34343c;border-radius:10px;background:#222228;min-height:70px;display:flex;flex-direction:column;gap:2px;box-sizing:border-box}
@@ -18,18 +19,20 @@
 .owut-progress{height:8px;border-radius:99px;background:#2b2b31;overflow:hidden}
 .owut-progress>div{height:100%;width:0;background:#00d86f;transition:width .2s}
 .owut-log{height:78px;overflow:auto;margin:9px 0 0;padding:8px;background:#0f0f11;border-radius:8px;color:#cfcfd6;font:11px/1.45 monospace;white-space:pre-wrap}
-.owut-settings-title{font-size:13px;font-weight:800;margin:15px 0 8px}
 .owut-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .owut-form label{display:flex;flex-direction:column;gap:4px;color:#92929e;font-size:11px}
 .owut-form input,.owut-form select{box-sizing:border-box;width:100%;background:#222228;color:#e8e8ec;border:1px solid #34343c;border-radius:8px;padding:9px}
 .owut-form input[type=checkbox]{width:auto;align-self:flex-start;transform:scale(1.15);margin:8px 0 0 3px}
 .owut-small{font-size:10px;color:#92929e;margin-top:5px}.small-row{margin-top:8px}
 
-/* SAFE layout: řádky zůstávají uvnitř původního gridu. */
-#meshTopRow380{
+/* Horní blok je jedna statická mřížka 2×2. Řádky se automaticky výškově srovnají. */
+#meshTopRow381{
   display:grid!important;
   grid-template-columns:minmax(0,3fr) minmax(360px,2fr)!important;
-  gap:12px!important;
+  grid-template-areas:
+    "topology progress"
+    "owut auto"!important;
+  gap:10px 12px!important;
   align-items:stretch!important;
   width:100%!important;
   min-width:0!important;
@@ -38,26 +41,23 @@
   grid-column:1 / -1!important;
   margin:0 0 12px!important;
 }
-#meshTopLeft380,#meshTopRight380{
-  display:flex!important;
-  flex-direction:column!important;
-  gap:10px!important;
+#meshTopRow381>*{
   width:100%!important;
   min-width:0!important;
   max-width:none!important;
-  box-sizing:border-box!important;
-}
-#meshTopLeft380>*,#meshTopRight380>*{
-  width:100%!important;
-  min-width:0!important;
-  max-width:none!important;
+  height:100%!important;
   box-sizing:border-box!important;
   grid-column:auto!important;
   grid-row:auto!important;
-  margin-left:0!important;
-  margin-right:0!important;
+  margin:0!important;
 }
-#maintenanceBackupRow380{
+#meshTopRow381>.mesh-cell-topology381{grid-area:topology!important}
+#meshTopRow381>.mesh-cell-progress381{grid-area:progress!important}
+#meshTopRow381>.mesh-cell-owut381{grid-area:owut!important}
+#meshTopRow381>.mesh-cell-auto381{grid-area:auto!important}
+
+/* Spodní panely zůstávají 50/50 jako ve stabilní v3.8.0. */
+#maintenanceBackupRow381{
   display:grid!important;
   grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;
   gap:12px!important;
@@ -69,7 +69,7 @@
   grid-column:1 / -1!important;
   margin:0 0 10px!important;
 }
-#maintenanceBackupRow380>*{
+#maintenanceBackupRow381>*{
   width:100%!important;
   min-width:0!important;
   max-width:none!important;
@@ -81,10 +81,13 @@
 }
 
 @media(max-width:900px){
-  #meshTopRow380{grid-template-columns:1fr!important}
+  #meshTopRow381{
+    grid-template-columns:1fr!important;
+    grid-template-areas:"topology" "owut" "progress" "auto"!important;
+  }
 }
 @media(max-width:700px){
-  #maintenanceBackupRow380{grid-template-columns:1fr!important}
+  #maintenanceBackupRow381{grid-template-columns:1fr!important}
 }
 @media(max-width:560px){
   .owut-status-grid,.owut-form{grid-template-columns:1fr!important}

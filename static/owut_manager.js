@@ -1,8 +1,8 @@
 (() => {
   'use strict';
 
-  if (window.__OWUT_MANAGER_380__) return;
-  window.__OWUT_MANAGER_380__ = true;
+  if (window.__OWUT_MANAGER_381__) return;
+  window.__OWUT_MANAGER_381__ = true;
 
   const WEEKDAYS = ['Pondělí','Úterý','Středa','Čtvrtek','Pátek','Sobota','Neděle'];
 
@@ -33,14 +33,15 @@
     return null;
   }
 
-  function makePanel() {
-    let panel = document.getElementById('owutPanel');
-    if (panel) return panel;
+  function makePanels() {
+    let manual = document.getElementById('owutPanel');
+    let auto = document.getElementById('owutAutoPanel');
+    if (manual && auto) return {manual, auto};
 
-    panel = document.createElement('section');
-    panel.id = 'owutPanel';
-    panel.className = 'owut-panel';
-    panel.innerHTML = `
+    manual = document.createElement('section');
+    manual.id = 'owutPanel';
+    manual.className = 'owut-panel owut-manual-panel';
+    manual.innerHTML = `
       <div class="owut-title">OWUT SYSUPGRADE</div>
       <div class="owut-sub">Oficiální OpenWrt upgrade přes owut · MESH1 → MESH4 → ROUTER · ROUTER používá dvojitý restart pro USB Extroot.</div>
       <div class="owut-status-grid" id="owutStatusGrid"></div>
@@ -54,8 +55,13 @@
         <div class="owut-progress-head"><span id="owutOpMsg">Připraveno</span><span id="owutOpPct">0 %</span></div>
         <div class="owut-progress"><div id="owutProgressBar"></div></div>
         <pre id="owutLog" class="owut-log"></pre>
-      </div>
-      <div class="owut-settings-title">AUTOMATICKÁ AKTUALIZACE + GMAIL REPORT</div>
+      </div>`;
+
+    auto = document.createElement('section');
+    auto.id = 'owutAutoPanel';
+    auto.className = 'owut-panel owut-auto-panel';
+    auto.innerHTML = `
+      <div class="owut-title owut-auto-title">AUTOMATICKÁ AKTUALIZACE + GMAIL REPORT</div>
       <div class="owut-form">
         <label><span>Automatika</span><input id="owutAuto" type="checkbox"></label>
         <label><span>Den</span><select id="owutWeekday">${WEEKDAYS.map((x,i)=>`<option value="${i}">${x}</option>`).join('')}</select></label>
@@ -70,9 +76,9 @@
         <button class="owut-btn" id="owutMailBtn">ODESLAT TESTOVACÍ EMAIL</button>
       </div>`;
 
-    // Jen dočasná pozice; arrangeLayoutOnce jej jednou přesune doprava pod Průběh operace.
     const main = document.querySelector('main,.container,.content') || document.body;
-    main.appendChild(panel);
+    main.appendChild(manual);
+    main.appendChild(auto);
 
     document.getElementById('owutCheckBtn').onclick = () => startOp('/api/owut/check', {});
     document.getElementById('owutUpgradeBtn').onclick = () => startOp('/api/owut/upgrade', {});
@@ -80,68 +86,67 @@
     document.getElementById('owutOverlayBtn').onclick = overlaySetup;
     document.getElementById('owutSaveBtn').onclick = saveSettings;
     document.getElementById('owutMailBtn').onclick = testEmail;
-    return panel;
+    return {manual, auto};
   }
 
   function arrangeLayoutOnce() {
-    if (document.documentElement.dataset.meshLayout380 === 'done') return true;
+    if (document.documentElement.dataset.meshLayout381 === 'done') return true;
 
     const topology = sectionByTitles(['TOPOLOGIE']);
     const progress = sectionByTitles(['PRŮBĚH OPERACE','PRUBEH OPERACE']);
     const lan = sectionByTitles(['LAN PORTY']);
     const maintenance = sectionByTitles(['ÚDRŽBA']);
     const backups = sectionByTitles(['KONFIGURACE - ZÁLOHY','KONFIGURACE – ZÁLOHY','ZÁLOHY KONFIGURACE']);
-    const owut = document.getElementById('owutPanel');
+    const manual = document.getElementById('owutPanel');
+    const auto = document.getElementById('owutAutoPanel');
 
-    if (!topology || !progress || !maintenance || !backups || !owut) return false;
+    if (!topology || !progress || !maintenance || !backups || !manual || !auto) return false;
 
-    // Horní řádek vytvoříme PŘÍMO v původním rodiči topologie.
-    // Nic nevytahujeme ven do dalšího shellu.
     const topParent = topology.parentElement;
     if (!topParent) return false;
 
-    let topRow = document.getElementById('meshTopRow380');
+    let topRow = document.getElementById('meshTopRow381');
     if (!topRow) {
       topRow = document.createElement('div');
-      topRow.id = 'meshTopRow380';
-      topRow.innerHTML = '<div id="meshTopLeft380"></div><div id="meshTopRight380"></div>';
+      topRow.id = 'meshTopRow381';
       topParent.insertBefore(topRow, topology);
     }
-    const left = document.getElementById('meshTopLeft380');
-    const right = document.getElementById('meshTopRight380');
-    if (!left || !right) return false;
 
-    left.appendChild(topology);
-    right.appendChild(progress);
-    right.appendChild(owut);
+    // Jednorázové statické rozmístění 2×2:
+    // TOPOLOGIE | PRŮBĚH OPERACE
+    // OWUT      | AUTO + GMAIL
+    topology.classList.add('mesh-cell-topology381');
+    progress.classList.add('mesh-cell-progress381');
+    manual.classList.add('mesh-cell-owut381');
+    auto.classList.add('mesh-cell-auto381');
 
-    // Spodní 50/50 řádek. Pouze jeden jednorázový přesun.
-    // Pokud nejsou oba panely v témže rodiči, použijeme rodiče ÚDRŽBY a
-    // přesto nic dalšího po dokončení už nepřesouváme.
+    topRow.appendChild(topology);
+    topRow.appendChild(progress);
+    topRow.appendChild(manual);
+    topRow.appendChild(auto);
+
     const bottomParent = maintenance.parentElement;
     if (!bottomParent) return false;
-    let bottomRow = document.getElementById('maintenanceBackupRow380');
+    let bottomRow = document.getElementById('maintenanceBackupRow381');
     if (!bottomRow) {
       bottomRow = document.createElement('div');
-      bottomRow.id = 'maintenanceBackupRow380';
+      bottomRow.id = 'maintenanceBackupRow381';
       bottomParent.insertBefore(bottomRow, maintenance);
     }
     bottomRow.appendChild(maintenance);
     bottomRow.appendChild(backups);
 
-    // Oba naše řádky musí přes všechny sloupce PŮVODNÍHO gridu.
     topRow.style.setProperty('grid-column','1 / -1','important');
     bottomRow.style.setProperty('grid-column','1 / -1','important');
     if (lan) lan.style.setProperty('grid-column','1 / -1','important');
 
-    document.documentElement.dataset.meshLayout380 = 'done';
+    document.documentElement.dataset.meshLayout381 = 'done';
     return true;
   }
 
   function arrangeWithFiniteRetries() {
     if (arrangeLayoutOnce()) return;
-    const delays = [100, 300, 700, 1400];
-    delays.forEach(ms => setTimeout(() => arrangeLayoutOnce(), ms));
+    [100, 300, 700, 1400].forEach(ms => setTimeout(() => arrangeLayoutOnce(), ms));
   }
 
   function hijackOldUpdateButton() {
@@ -244,7 +249,7 @@
       log.scrollTop = log.scrollHeight;
     }
     document.querySelectorAll('#owutPanel button').forEach(b => {
-      if (!['owutSaveBtn','owutMailBtn'].includes(b.id)) b.disabled = !!op.running;
+      b.disabled = !!op.running;
     });
   }
 
@@ -253,15 +258,15 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
-    makePanel();
+    makePanels();
     arrangeWithFiniteRetries();
     hijackOldUpdateButton();
     loadSettings();
     refreshStatus();
     refreshOperation();
 
-    // Pouze datové pollingy. ŽÁDNÝ MutationObserver, ŽÁDNÝ resize DOM přesun.
+    // OWUT operace = 5 s, stav OWUT routerů = 30 s.
     setInterval(refreshOperation, 5000);
-    setInterval(refreshStatus, 60000);
+    setInterval(refreshStatus, 30000);
   }, {once:true});
 })();

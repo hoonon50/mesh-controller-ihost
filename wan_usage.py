@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import threading
@@ -17,6 +18,7 @@ SSH_PASS = os.environ.get("MESH_SSH_PASS", "root")
 SSH_TIMEOUT = int(os.environ.get("MESH_SSH_TIMEOUT", "6"))
 DATA_FILE = Path(os.environ.get("WAN_USAGE_FILE", "/data/wan_usage.json"))
 POLL_SECONDS = max(10, int(os.environ.get("WAN_USAGE_POLL_SECONDS", "30")))
+SAVE_SECONDS = max(300, int(os.environ.get("WAN_USAGE_SAVE_SECONDS", "3600")))
 
 
 def _utc_now() -> str:
@@ -38,10 +40,14 @@ class WanUsageCollector:
             "last_device": "",
             "started_at": _utc_now(),
             "updated_at": "",
+            "persisted_at": "",
             "status": "starting",
             "error": "",
         }
+        self._dirty = False
+        self._last_persist_monotonic = time.monotonic()
         self._load()
+        atexit.register(self.flush)
 
     def _load(self) -> None:
         try:
@@ -59,7 +65,10 @@ class WanUsageCollector:
             self.state["error"] = f"Načtení {DATA_FILE}: {exc}"
 
     def _save(self) -> None:
+        # Volá se pouze při drženém self.lock. Běžné WAN vzorky zůstávají v RAM
+        # a na SD kartu se zapisuje nejvýše 1x za SAVE_SECONDS.
         DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self.state["persisted_at"] = _utc_now()
         tmp = DATA_FILE.with_suffix(DATA_FILE.suffix + ".tmp")
         payload = json.dumps(self.state, ensure_ascii=False, indent=2)
         tmp.write_text(payload, encoding="utf-8")
@@ -71,6 +80,18 @@ class WanUsageCollector:
         try:
             os.chmod(DATA_FILE, 0o600)
         except OSError:
+            pass
+        self._dirty = False
+        self._last_persist_monotonic = time.monotonic()
+
+    def flush(self) -> None:
+        """Zapíše rozpracovaný součet při korektním ukončení procesu."""
+        try:
+            with self.lock:
+                if self._dirty:
+                    self._save()
+        except Exception:
+            # Při shutdownu nesmí chyba zápisu blokovat ukončení kontejneru.
             pass
 
     @staticmethod
@@ -147,14 +168,25 @@ printf 'WAN_DEVICE=%s\nBOOT_ID=%s\nRX_BYTES=%s\nTX_BYTES=%s\n' "$DEV" "$BOOT" "$
                     and self.state.get("last_boot_id") == boot_id
                 )
 
+                source_changed = (
+                    last_rx is not None
+                    and last_tx is not None
+                    and not same_source
+                )
+                counter_reset = False
+
                 if same_source:
                     last_rx_i = int(last_rx)
                     last_tx_i = int(last_tx)
                     # Při neočekávaném resetu čítače pouze vytvoříme nový baseline.
                     if rx >= last_rx_i:
                         self.state["total_rx_bytes"] = int(self.state.get("total_rx_bytes") or 0) + (rx - last_rx_i)
+                    else:
+                        counter_reset = True
                     if tx >= last_tx_i:
                         self.state["total_tx_bytes"] = int(self.state.get("total_tx_bytes") or 0) + (tx - last_tx_i)
+                    else:
+                        counter_reset = True
 
                 self.state["last_rx_bytes"] = rx
                 self.state["last_tx_bytes"] = tx
@@ -163,17 +195,21 @@ printf 'WAN_DEVICE=%s\nBOOT_ID=%s\nRX_BYTES=%s\nTX_BYTES=%s\n' "$DEV" "$BOOT" "$
                 self.state["updated_at"] = _utc_now()
                 self.state["status"] = "ok"
                 self.state["error"] = ""
-                self._save()
+                self._dirty = True
+
+                # SD šetření: standardně zapisujeme pouze 1x za hodinu.
+                # Okamžitý zápis je jen při prvním vytvoření souboru nebo po
+                # změně/resetu WAN zdroje, aby se bezpečně uložil nový baseline.
+                due = (time.monotonic() - self._last_persist_monotonic) >= SAVE_SECONDS
+                if (not DATA_FILE.exists()) or source_changed or counter_reset or due:
+                    self._save()
         except Exception as exc:
             with self.lock:
                 self.state["status"] = "error"
                 self.state["error"] = str(exc)
                 self.state["updated_at"] = _utc_now()
-                # Chyba spojení nesmí vynulovat dosud nasčítaná data.
-                try:
-                    self._save()
-                except Exception:
-                    pass
+                # Chyba spojení se drží jen v RAM; kvůli chybě síťového spojení
+                # zbytečně nezapisujeme SD kartu. Dosud nasčítaná data zůstávají.
 
     def snapshot(self) -> Dict[str, Any]:
         with self.lock:
@@ -221,6 +257,8 @@ def init_wan_usage(app: Any) -> WanUsageCollector:
                 "wan_device": state.get("last_device", ""),
                 "started_at": state.get("started_at", ""),
                 "updated_at": state.get("updated_at", ""),
+                "persisted_at": state.get("persisted_at", ""),
+                "save_interval_seconds": SAVE_SECONDS,
                 "error": state.get("error", ""),
             })
 

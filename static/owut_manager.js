@@ -2,7 +2,8 @@
   'use strict';
 
   const WEEKDAYS = ['Pondělí','Úterý','Středa','Čtvrtek','Pátek','Sobota','Neděle'];
-  let pollTimer = null;
+  let layoutBusy = false;
+  let layoutScheduled = false;
 
   async function api(url, options={}) {
     const r = await fetch(url, {cache:'no-store', ...options, headers:{'Content-Type':'application/json', ...(options.headers||{})}});
@@ -16,73 +17,170 @@
     return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  function titleText(el) {
+    return (el?.textContent || '').replace(/\s+/g, ' ').trim().toUpperCase();
+  }
+
   function sectionByTitles(titles) {
-    const wanted = titles.map(x => x.toUpperCase());
-    const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,.section-title,.card-title,strong'));
+    const wanted = titles.map(x => x.replace(/\s+/g, ' ').trim().toUpperCase());
+    const headings = Array.from(document.querySelectorAll(
+      'h1,h2,h3,h4,.section-title,.card-title,.panel-title,.title,strong'
+    ));
     for (const el of headings) {
-      const txt = (el.textContent || '').trim().toUpperCase();
-      if (!wanted.includes(txt)) continue;
-      return el.closest('section,.panel,.card') || el.parentElement;
+      if (!wanted.includes(titleText(el))) continue;
+      return el.closest('section,.panel,.card,.glass,.box,.block') || el.parentElement;
     }
     return null;
   }
 
-  function compactMaintenanceAndBackups() {
-    const maintenance = sectionByTitles(['ÚDRŽBA']);
-    const backups = sectionByTitles(['KONFIGURACE - ZÁLOHY','KONFIGURACE – ZÁLOHY','ZÁLOHY KONFIGURACE']);
-    if (!maintenance || !backups || maintenance === backups) return;
+  function forcePanelFill(panel) {
+    if (!panel) return;
+    panel.style.setProperty('width', '100%', 'important');
+    panel.style.setProperty('max-width', 'none', 'important');
+    panel.style.setProperty('min-width', '0', 'important');
+    panel.style.setProperty('box-sizing', 'border-box', 'important');
+    panel.style.setProperty('grid-column', 'auto', 'important');
+    panel.style.setProperty('grid-row', 'auto', 'important');
+    panel.style.setProperty('margin-left', '0', 'important');
+    panel.style.setProperty('margin-right', '0', 'important');
+  }
 
-    // v3.7.3: ÚDRŽBA + KONFIGURACE/ZÁLOHY vedle sebe 50/50 a se stejnou výškou.
+  function compactMaintenance(maintenance) {
+    if (!maintenance) return;
+    maintenance.querySelectorAll('p,.sub,.subtitle,.section-subtitle,.muted').forEach(el => {
+      const txt = (el.textContent || '').trim();
+      if (txt && !el.querySelector('button,input,select')) el.style.display = 'none';
+    });
+  }
+
+  function ensureTopDashboard(topology, progress, owut, lan) {
+    if (!topology || !progress || !owut) return null;
+
+    let row = document.getElementById('topDashboardRow');
+    if (!row) {
+      row = document.createElement('div');
+      row.id = 'topDashboardRow';
+      row.className = 'top-dashboard-row';
+
+      const left = document.createElement('div');
+      left.id = 'topDashboardLeft';
+      left.className = 'top-dashboard-left';
+      const right = document.createElement('div');
+      right.id = 'topDashboardRight';
+      right.className = 'top-dashboard-right';
+      row.append(left, right);
+
+      // Ideální kotva je LAN PORTY: horní 60/40 blok bude vždy těsně nad nimi.
+      if (lan && lan.parentElement) {
+        lan.parentElement.insertBefore(row, lan);
+      } else if (topology.parentElement) {
+        topology.parentElement.insertBefore(row, topology);
+      }
+    }
+
+    const left = document.getElementById('topDashboardLeft');
+    const right = document.getElementById('topDashboardRight');
+    if (!left || !right) return row;
+
+    if (topology.parentElement !== left) left.appendChild(topology);
+    if (progress.parentElement !== right) right.appendChild(progress);
+    if (owut.parentElement !== right) right.appendChild(owut);
+
+    forcePanelFill(topology);
+    forcePanelFill(progress);
+    forcePanelFill(owut);
+
+    topology.classList.add('dashboard-topology-panel');
+    progress.classList.add('dashboard-progress-panel');
+    owut.classList.add('dashboard-owut-panel');
+    return row;
+  }
+
+  function ensureMaintenanceBackupRow(maintenance, backups, lan) {
+    if (!maintenance || !backups || maintenance === backups) return null;
+
     let row = document.getElementById('maintenanceBackupRow');
     if (!row) {
       row = document.createElement('div');
       row.id = 'maintenanceBackupRow';
-      row.className = 'maintenance-backup-row';
-      maintenance.parentElement.insertBefore(row, maintenance);
+      row.className = 'maintenance-backup-row-force';
+
+      // Dole bude přesně: LAN PORTY -> ÚDRŽBA | KONFIGURACE-ZÁLOHY.
+      if (lan && lan.parentElement) {
+        lan.insertAdjacentElement('afterend', row);
+      } else if (maintenance.parentElement) {
+        maintenance.parentElement.insertBefore(row, maintenance);
+      }
     }
 
-    // Přesuneme obě existující karty do společného řádku. Jejich obsah ani funkce se nemění.
     if (maintenance.parentElement !== row) row.appendChild(maintenance);
     if (backups.parentElement !== row) row.appendChild(backups);
 
-    row.style.display = 'grid';
-    row.style.gridTemplateColumns = 'minmax(0,1fr) minmax(0,1fr)';
-    row.style.gap = '10px';
-    row.style.alignItems = 'stretch';
-    row.style.width = '100%';
-    row.style.boxSizing = 'border-box';
-    row.style.margin = '0 0 10px';
-
-    for (const box of [maintenance, backups]) {
-      box.style.gridColumn = 'auto';
-      box.style.width = '100%';
-      box.style.maxWidth = '100%';
-      box.style.flex = 'initial';
-      box.style.alignSelf = 'stretch';
-      box.style.height = '100%';
-      box.style.minHeight = '0';
-      box.style.marginTop = '0';
-      box.style.marginBottom = '0';
-      box.style.boxSizing = 'border-box';
+    for (const panel of [maintenance, backups]) {
+      panel.classList.add('maintenance-backup-half');
+      panel.style.setProperty('display', 'flex', 'important');
+      panel.style.setProperty('flex-direction', 'column', 'important');
+      panel.style.setProperty('flex', '1 1 0', 'important');
+      panel.style.setProperty('flex-basis', '0', 'important');
+      panel.style.setProperty('width', '0', 'important');
+      panel.style.setProperty('min-width', '0', 'important');
+      panel.style.setProperty('max-width', 'none', 'important');
+      panel.style.setProperty('align-self', 'stretch', 'important');
+      panel.style.setProperty('height', 'auto', 'important');
+      panel.style.setProperty('box-sizing', 'border-box', 'important');
+      panel.style.setProperty('grid-column', 'auto', 'important');
+      panel.style.setProperty('grid-row', 'auto', 'important');
+      panel.style.setProperty('margin-top', '0', 'important');
+      panel.style.setProperty('margin-bottom', '0', 'important');
     }
 
-    // ÚDRŽBU ponecháme kompaktní, ale její karta se výškově dorovná se ZÁLOHAMI.
-    maintenance.querySelectorAll('p,.sub,.subtitle,.section-subtitle,.muted').forEach(el => {
-      const txt=(el.textContent||'').trim();
-      if (txt && !el.querySelector('button,input,select')) el.style.display='none';
+    compactMaintenance(maintenance);
+    return row;
+  }
+
+  function applyResponsiveLayout() {
+    const top = document.getElementById('topDashboardRow');
+    const bottom = document.getElementById('maintenanceBackupRow');
+    const mobileTop = window.innerWidth <= 900;
+    const mobileBottom = window.innerWidth <= 700;
+
+    if (top) top.style.setProperty('grid-template-columns', mobileTop ? '1fr' : 'minmax(0,3fr) minmax(360px,2fr)', 'important');
+    if (bottom) {
+      bottom.style.setProperty('flex-direction', mobileBottom ? 'column' : 'row', 'important');
+      for (const box of bottom.children) {
+        if (!(box instanceof HTMLElement)) continue;
+        box.style.setProperty('width', mobileBottom ? '100%' : '0', 'important');
+        box.style.setProperty('flex-basis', mobileBottom ? 'auto' : '0', 'important');
+      }
+    }
+  }
+
+  function arrangeDashboard() {
+    if (layoutBusy) return;
+    layoutBusy = true;
+    try {
+      const topology = sectionByTitles(['TOPOLOGIE']);
+      const progress = sectionByTitles(['PRŮBĚH OPERACE','PRUBEH OPERACE']);
+      const lan = sectionByTitles(['LAN PORTY']);
+      const maintenance = sectionByTitles(['ÚDRŽBA','UDRŽBA']);
+      const backups = sectionByTitles(['KONFIGURACE - ZÁLOHY','KONFIGURACE – ZÁLOHY','KONFIGURACE - ZALOHY','ZÁLOHY KONFIGURACE']);
+      const owut = document.getElementById('owutPanel');
+
+      if (topology && progress && owut) ensureTopDashboard(topology, progress, owut, lan);
+      if (maintenance && backups) ensureMaintenanceBackupRow(maintenance, backups, lan);
+      applyResponsiveLayout();
+    } finally {
+      layoutBusy = false;
+    }
+  }
+
+  function scheduleLayout() {
+    if (layoutScheduled) return;
+    layoutScheduled = true;
+    requestAnimationFrame(() => {
+      layoutScheduled = false;
+      arrangeDashboard();
     });
-
-    // Na užším displeji se karty složí pod sebe, aby zůstaly čitelné.
-    const applyResponsive = () => {
-      row.style.gridTemplateColumns = window.innerWidth <= 760
-        ? 'minmax(0,1fr)'
-        : 'minmax(0,1fr) minmax(0,1fr)';
-    };
-    applyResponsive();
-    if (!row.dataset.resizeBound) {
-      row.dataset.resizeBound = '1';
-      window.addEventListener('resize', applyResponsive, {passive:true});
-    }
   }
 
   function makePanel() {
@@ -125,18 +223,10 @@
       </div>
     `;
 
-    // v3.7.3: ÚDRŽBA + ZÁLOHY jsou v jednom 50/50 řádku; OWUT je pod nimi.
-    compactMaintenanceAndBackups();
-    const row = document.getElementById('maintenanceBackupRow');
-    const backups = sectionByTitles(['KONFIGURACE - ZÁLOHY','KONFIGURACE – ZÁLOHY','ZÁLOHY KONFIGURACE']);
-    const maintenance = sectionByTitles(['ÚDRŽBA']);
-    const anchor = row || backups || maintenance;
-    if (anchor && anchor.parentElement) {
-      anchor.insertAdjacentElement('afterend', panel);
-    } else {
-      const main = document.querySelector('main,.container,.content') || document.body;
-      main.appendChild(panel);
-    }
+    // Panel vložíme do hlavního obsahu a následně jej layout přesune
+    // pod PRŮBĚH OPERACE do pravého horního sloupce.
+    const main = document.querySelector('main,.container,.content') || document.body;
+    main.appendChild(panel);
 
     document.getElementById('owutCheckBtn').onclick = () => startOp('/api/owut/check', {});
     document.getElementById('owutUpgradeBtn').onclick = () => startOp('/api/owut/upgrade', {});
@@ -254,19 +344,25 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
-    compactMaintenanceAndBackups();
     makePanel();
-    compactMaintenanceAndBackups();
     hijackOldUpdateButton();
+    arrangeDashboard();
     loadSettings();
     refreshStatus();
     refreshOperation();
+
+    setTimeout(arrangeDashboard, 300);
+    setTimeout(arrangeDashboard, 1200);
     setInterval(refreshOperation, 2500);
     setInterval(refreshStatus, 60000);
 
+    window.addEventListener('resize', applyResponsiveLayout, {passive:true});
+
+    // Některé části hlavní aplikace se živě překreslují. Layout je idempotentní;
+    // observer pouze znovu naváže případně nově vytvořený obsah do stejných sloupců.
     const observer = new MutationObserver(() => {
       hijackOldUpdateButton();
-      compactMaintenanceAndBackups();
+      scheduleLayout();
     });
     observer.observe(document.body, {childList:true, subtree:true});
   });

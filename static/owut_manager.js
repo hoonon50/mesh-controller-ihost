@@ -16,6 +16,63 @@
     return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  function sectionByTitles(titles) {
+    const wanted = titles.map(x => x.toUpperCase());
+    const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,.section-title,.card-title,strong'));
+    for (const el of headings) {
+      const txt = (el.textContent || '').trim().toUpperCase();
+      if (!wanted.includes(txt)) continue;
+      return el.closest('section,.panel,.card') || el.parentElement;
+    }
+    return null;
+  }
+
+  function compactMaintenanceAndBackups() {
+    const maintenance = sectionByTitles(['ÚDRŽBA']);
+    const backups = sectionByTitles(['KONFIGURACE - ZÁLOHY','KONFIGURACE – ZÁLOHY','ZÁLOHY KONFIGURACE']);
+    if (!maintenance || !backups || maintenance === backups) return;
+
+    // Zálohy patří bezprostředně pod ÚDRŽBU.
+    if (maintenance.nextElementSibling !== backups) {
+      maintenance.insertAdjacentElement('afterend', backups);
+    }
+
+    // Karty se nesmějí natahovat podle výšky sousední karty.
+    for (const box of [maintenance, backups]) {
+      box.style.gridColumn = '1 / -1';
+      box.style.width = '100%';
+      box.style.maxWidth = '100%';
+      box.style.flex = '0 0 100%';
+      box.style.alignSelf = 'start';
+      box.style.height = 'auto';
+      box.style.minHeight = '0';
+      box.style.boxSizing = 'border-box';
+    }
+
+    maintenance.style.marginBottom = '10px';
+    backups.style.marginTop = '0';
+
+    const parent = maintenance.parentElement;
+    if (parent && parent === backups.parentElement) {
+      const cs = getComputedStyle(parent);
+      parent.style.alignItems = 'start';
+      if (cs.display.includes('grid')) {
+        parent.style.gridTemplateColumns = 'minmax(0,1fr)';
+        parent.style.rowGap = '10px';
+      } else if (cs.display.includes('flex')) {
+        parent.style.flexDirection = 'column';
+        parent.style.alignItems = 'stretch';
+        parent.style.gap = '10px';
+      }
+    }
+
+    // Odstraní pouze prázdný prostor; tlačítka a ovládací prvky zůstávají.
+    maintenance.querySelectorAll('p,.sub,.subtitle,.section-subtitle,.muted').forEach(el => {
+      const txt=(el.textContent||'').trim();
+      if (txt && !el.querySelector('button,input,select')) el.style.display='none';
+    });
+  }
+
   function makePanel() {
     if (document.getElementById('owutPanel')) return;
     const panel = document.createElement('section');
@@ -56,13 +113,14 @@
       </div>
     `;
 
-    // Umístění: před konfigurace/zálohy, pokud najdeme nadpis ÚDRŽBA; jinak před </main>/na konec body.
-    const headings = Array.from(document.querySelectorAll('h1,h2,h3,.section-title,.card-title,strong'));
-    const maintenance = headings.find(el => (el.textContent || '').trim().toUpperCase() === 'ÚDRŽBA');
-    if (maintenance) {
-      const section = maintenance.closest('section,.panel,.card') || maintenance.parentElement;
-      if (section && section.parentElement) section.insertAdjacentElement('afterend', panel);
-      else document.body.appendChild(panel);
+    // v3.7.2: ÚDRŽBA -> KONFIGURACE/ZÁLOHY -> OWUT.
+    // Zálohy tak zůstávají bezprostředně pod kompaktní údržbou.
+    compactMaintenanceAndBackups();
+    const backups = sectionByTitles(['KONFIGURACE - ZÁLOHY','KONFIGURACE – ZÁLOHY','ZÁLOHY KONFIGURACE']);
+    const maintenance = sectionByTitles(['ÚDRŽBA']);
+    const anchor = backups || maintenance;
+    if (anchor && anchor.parentElement) {
+      anchor.insertAdjacentElement('afterend', panel);
     } else {
       const main = document.querySelector('main,.container,.content') || document.body;
       main.appendChild(panel);
@@ -184,7 +242,9 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    compactMaintenanceAndBackups();
     makePanel();
+    compactMaintenanceAndBackups();
     hijackOldUpdateButton();
     loadSettings();
     refreshStatus();
@@ -192,7 +252,10 @@
     setInterval(refreshOperation, 2500);
     setInterval(refreshStatus, 60000);
 
-    const observer = new MutationObserver(() => hijackOldUpdateButton());
+    const observer = new MutationObserver(() => {
+      hijackOldUpdateButton();
+      compactMaintenanceAndBackups();
+    });
     observer.observe(document.body, {childList:true, subtree:true});
   });
 })();

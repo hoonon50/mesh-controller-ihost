@@ -1,13 +1,13 @@
-OpenWrt Mesh Controller PRO WEB v3.6.7 – SONOFF iHost ARMv7
+OpenWrt Mesh Controller PRO WEB v3.6.8 – SONOFF iHost ARMv7
 
-Změny v3.6.7 – ŽIVÍ KLIENTI:
+Změny v3.6.8 – ŽIVÍ KLIENTI:
 - mesh peer MAC se nikdy nepočítají jako klienti
 - Wi-Fi klient = právě asociovaná stanice
 - DHCP-only klient se zobrazí jen po aktivním ping ověření
 - vypnuté zařízení se starým DHCP lease se už do počtu nezahrne
 - STALE ARP záznam bez ověření se nepovažuje za živého klienta
 
-Změny v3.6.7:
+Změny v3.6.8:
 - všude označení 2.4 GHz s tečkou
 - horní metriky: KLIENTI, 5 GHz a 2.4 GHz jako samostatné dlaždice se stejným stylem
 - nadpis LAN PORTY velkými písmeny
@@ -61,3 +61,8 @@ v3.6.5.2 opravy:
 - hostname se čte přes UCI nebo /proc/sys/kernel/hostname, ne přes chybějící BusyBox hostname příkaz
 - staré/legacy sady záloh lze rekurzivně smazat i když mají mezery nebo podadresáře
 - při chybě smazání web zobrazí upozornění
+Změny v3.6.8:
+- čas záloh a logů je Europe/Prague včetně DST
+- staré UTC časy záloh se při zobrazení převedou na lokální čas
+- exportní ZIP obsahuje pouze ROUTER.tar.gz + MESH1..4.tar.gz; backup_info.json zůstává jen interně v /data
+- přísnější LIVE klienti: Wi-Fi = aktuálně asociovaná stanice; LAN/DHCP/ARP = aktivně ověřená IP v aktuálním refreshi

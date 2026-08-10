@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import calendar
 import ipaddress
 import os
 import re
@@ -603,10 +604,10 @@ done; printf 'PORTS_END\n'
                     continue
                 lease = lease_map.get(mac, {})
                 client_ip = str(lease.get("ip") or neigh_ip.get(mac, "")).strip()
-                # FDB je čerstvý důkaz provozu na fyzickém portu. Pokud známe IP a
-                # aktivní ping odpověděl, je klient jednoznačně živý. Bez IP ponecháme
-                # FDB-only zařízení jako živé, protože bylo právě naučené bridge.
-                if client_ip and live_ips and client_ip not in live_ips:
+                # Přísný LIVE režim: samotný FDB záznam může v bridge zůstat ještě
+                # po odpojení zařízení. LAN klienta proto započítáme jen tehdy, když
+                # známe jeho IP a v TOMTO refreshi aktivně odpověděl přes ARP/ping.
+                if not client_ip or client_ip not in live_ips:
                     continue
                 clients_by_mac[mac] = {
                     "node": display_names.get(router["ip"], router["name"]), "node_ip": router["ip"],
@@ -623,12 +624,10 @@ done; printf 'PORTS_END\n'
                     continue
                 lease = lease_map.get(mac, {})
                 client_ip = str(lease.get("ip") or n.get("ip", "")).strip()
-                nstate = str(n.get("state", "")).upper()
-                if live_ips:
-                    if client_ip not in live_ips:
-                        continue
-                elif nstate not in {"REACHABLE", "DELAY", "PROBE"}:
-                    # Bez aktivního pingu nepočítáme STALE ARP záznamy jako živé.
+                # Přísný LIVE režim: ani stav REACHABLE v neighbor cache není
+                # pro horní počitadlo dostatečný. Musí přijít aktivní odpověď v tomto
+                # refreshi. Tím se minimalizují vypnutá zařízení ve výpisu.
+                if not client_ip or client_ip not in live_ips:
                     continue
                 clients_by_mac[mac] = {
                     "node": display_names.get(router["ip"], router["name"]), "node_ip": router["ip"],
@@ -856,7 +855,13 @@ echo LED_OK
         set_dir.mkdir(parents=True, exist_ok=True)
         total = len(routers)
         success = 0
-        manifest = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "files": []}
+        now_epoch = time.time()
+        manifest = {
+            "created": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_epoch)),
+            "created_epoch": now_epoch,
+            "timezone": os.environ.get("TZ", "Europe/Prague"),
+            "files": [],
+        }
         for i, router in enumerate(routers):
             ip, name = router["ip"], router["name"]
             filename = router.get("backup_name") or f"{name}.tar.gz"
@@ -914,7 +919,26 @@ echo LED_OK
             files = []
             for f in sorted(d.glob("*.tar.gz")):
                 files.append({"name": f.name, "size": f.stat().st_size})
-            created = info.get("created") or d.name.replace("_", " ")
+            # Nové zálohy mají přesný epoch timestamp. Starší webové verze
+            # ukládaly čas v UTC bez informace o zóně; ty při zobrazení převedeme
+            # do lokálního času kontejneru (Europe/Prague).
+            created = ""
+            try:
+                if info.get("created_epoch") is not None:
+                    created = time.strftime(
+                        "%Y-%m-%d %H:%M:%S",
+                        time.localtime(float(info["created_epoch"])),
+                    )
+                elif info.get("created"):
+                    old_utc = time.strptime(str(info["created"]), "%Y-%m-%d %H:%M:%S")
+                    created = time.strftime(
+                        "%Y-%m-%d %H:%M:%S",
+                        time.localtime(calendar.timegm(old_utc)),
+                    )
+            except Exception:
+                created = str(info.get("created") or "")
+            if not created:
+                created = d.name.replace("_", " ")
             result.append({"id": d.name, "created": created, "count": len(files), "files": files})
         return result
 
@@ -946,9 +970,11 @@ echo LED_OK
         safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", set_id).strip("_") or "backup"
         zip_path = DATA_DIR / f"BACKUP_{safe_id}.zip"
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
-            for f in sorted(d.rglob("*")):
+            # ZIP pro uživatele obsahuje pouze obnovitelné OpenWrt archivy.
+            # backup_info.json je interní metadata aplikace a do exportu nepatří.
+            for f in sorted(d.glob("*.tar.gz")):
                 if f.is_file():
-                    z.write(f, arcname=str(f.relative_to(d)))
+                    z.write(f, arcname=f.name)
         return zip_path
 
     def delete_backup(self, set_id: str) -> bool:

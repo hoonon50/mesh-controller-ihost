@@ -3,7 +3,8 @@ FROM debian:bookworm-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DATA_DIR=/data \
-    PORT=8088
+    PORT=8088 \
+    TZ=Europe/Prague
 
 WORKDIR /app
 
@@ -13,6 +14,7 @@ RUN apt-get update \
        python3-flask \
        python3-paramiko \
        gunicorn \
+       tzdata \
        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

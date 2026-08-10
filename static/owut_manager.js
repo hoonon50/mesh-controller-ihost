@@ -106,60 +106,170 @@
   // v3.7.6 – pouze klientské rozmístění podle nákresu.
   // Server / Flask / Jinja se tímto layoutem vůbec nemění.
   function installDashboardLayoutCss() {
-    if (document.getElementById('dashboardLayout376')) return;
+    if (document.getElementById('dashboardLayout378')) return;
     const st = document.createElement('style');
-    st.id = 'dashboardLayout376';
+    st.id = 'dashboardLayout378';
     st.textContent = `
-      #topDashboardRow376{display:grid!important;grid-template-columns:minmax(0,3fr) minmax(360px,2fr)!important;gap:12px!important;align-items:stretch!important;width:100%!important;box-sizing:border-box!important;margin:0 0 12px!important}
-      #topDashboardLeft376,#topDashboardRight376{display:flex!important;flex-direction:column!important;gap:10px!important;min-width:0!important;width:100%!important;box-sizing:border-box!important}
-      #topDashboardLeft376>*,#topDashboardRight376>*{min-width:0!important;max-width:100%!important;box-sizing:border-box!important;margin-left:0!important;margin-right:0!important}
-      #topDashboardLeft376>*{flex:1 1 auto!important}
-      #topDashboardRight376>#owutPanel{margin:0!important;padding:13px!important;width:100%!important}
-      #topDashboardRight376 .owut-status-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}
-      #topDashboardRight376 .owut-node{min-height:70px!important;padding:7px!important}
-      #topDashboardRight376 .owut-log{height:78px!important}
-      #topDashboardRight376 .owut-form{grid-template-columns:repeat(2,minmax(0,1fr))!important}
-      @media(max-width:900px){#topDashboardRow376{grid-template-columns:1fr!important}}
-      @media(max-width:560px){#topDashboardRight376 .owut-status-grid,#topDashboardRight376 .owut-form{grid-template-columns:1fr!important}}
+      /* v3.7.8 – hlavní dashboard není uvnitř původního levého sloupce. */
+      #dashboardShell378{
+        display:flex!important;flex-direction:column!important;gap:12px!important;
+        width:100%!important;max-width:none!important;min-width:0!important;
+        grid-column:1 / -1!important;box-sizing:border-box!important;margin:0 0 12px!important;
+      }
+      #topDashboardRow378{
+        display:grid!important;grid-template-columns:minmax(0,3fr) minmax(360px,2fr)!important;
+        gap:12px!important;align-items:stretch!important;width:100%!important;max-width:none!important;
+        min-width:0!important;box-sizing:border-box!important;
+      }
+      #topDashboardLeft378,#topDashboardRight378{
+        display:flex!important;flex-direction:column!important;gap:10px!important;
+        min-width:0!important;width:100%!important;max-width:none!important;box-sizing:border-box!important;
+      }
+      #topDashboardLeft378>*,#topDashboardRight378>*{
+        width:100%!important;max-width:none!important;min-width:0!important;
+        grid-column:auto!important;grid-row:auto!important;box-sizing:border-box!important;
+        margin-left:0!important;margin-right:0!important;
+      }
+      #topDashboardRight378>#owutPanel{margin:0!important;padding:13px!important;width:100%!important;max-width:none!important}
+      #topDashboardRight378 .owut-status-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}
+      #topDashboardRight378 .owut-node{min-height:70px!important;padding:7px!important}
+      #topDashboardRight378 .owut-log{height:78px!important}
+      #topDashboardRight378 .owut-form{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+
+      #lanDashboard378{width:100%!important;max-width:none!important;min-width:0!important;box-sizing:border-box!important}
+      #bottomDashboardRow378{
+        display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;
+        gap:12px!important;align-items:stretch!important;width:100%!important;max-width:none!important;
+        min-width:0!important;box-sizing:border-box!important;
+      }
+      #bottomDashboardRow378> *{
+        width:100%!important;max-width:none!important;min-width:0!important;
+        grid-column:auto!important;grid-row:auto!important;align-self:stretch!important;
+        box-sizing:border-box!important;margin:0!important;
+      }
+
+      /* Pokud rodič shellu je původní CSS grid, shell musí přes všechny sloupce. */
+      #dashboardShell378,#topDashboardRow378,#lanDashboard378,#bottomDashboardRow378{
+        clear:both!important;
+      }
+
+      @media(max-width:900px){
+        #topDashboardRow378{grid-template-columns:1fr!important}
+      }
+      @media(max-width:700px){
+        #bottomDashboardRow378{grid-template-columns:1fr!important}
+      }
+      @media(max-width:560px){
+        #topDashboardRight378 .owut-status-grid,#topDashboardRight378 .owut-form{grid-template-columns:1fr!important}
+      }
     `;
     document.head.appendChild(st);
   }
 
+  function commonAncestor(nodes) {
+    const valid = nodes.filter(Boolean);
+    if (!valid.length) return null;
+    let a = valid[0];
+    while (a) {
+      if (valid.every(n => a === n || a.contains(n))) return a;
+      a = a.parentElement;
+    }
+    return document.body;
+  }
+
+  function directChildOf(ancestor, node) {
+    if (!ancestor || !node) return null;
+    let cur = node;
+    while (cur && cur.parentElement !== ancestor) cur = cur.parentElement;
+    return cur && cur.parentElement === ancestor ? cur : null;
+  }
+
   function arrangeTopDashboard376() {
+    // Název funkce ponechán kvůli existujícím voláním; implementace je v3.7.8.
     installDashboardLayoutCss();
     const topology = sectionByTitles(['TOPOLOGIE']);
     const progress = sectionByTitles(['PRŮBĚH OPERACE','PRUBEH OPERACE']);
+    const lan = sectionByTitles(['LAN PORTY']);
+    const maintenance = sectionByTitles(['ÚDRŽBA']);
+    const backups = sectionByTitles(['KONFIGURACE - ZÁLOHY','KONFIGURACE – ZÁLOHY','ZÁLOHY KONFIGURACE']);
     const owut = document.getElementById('owutPanel');
     if (!topology || !progress || !owut) return;
 
-    let row = document.getElementById('topDashboardRow376');
-    if (!row) {
-      row = document.createElement('div');
-      row.id = 'topDashboardRow376';
-      row.innerHTML = '<div id="topDashboardLeft376"></div><div id="topDashboardRight376"></div>';
-      const parent = topology.parentElement;
-      if (!parent) return;
-      parent.insertBefore(row, topology);
+    // Pokud starší verze už vytvořila vlastní pomocné řádky, panely z nich
+    // vytáhneme a staré prázdné kontejnery později odstraníme.
+    const anchorNodes = [topology, progress, lan, maintenance, backups].filter(Boolean);
+    let host = commonAncestor(anchorNodes);
+    if (!host || host === document.documentElement) host = document.body;
+
+    // U příliš nízkého LCA (např. některý vnitřní sloupec) jdeme nahoru,
+    // dokud rodič obsahuje alespoň topologii i průběh operace jako různé větve.
+    if (host !== document.body) {
+      const tChild = directChildOf(host, topology);
+      const pChild = directChildOf(host, progress);
+      if (!tChild || !pChild || tChild === pChild) {
+        let probe = host.parentElement;
+        while (probe && probe !== document.body) {
+          const tc = directChildOf(probe, topology);
+          const pc = directChildOf(probe, progress);
+          if (tc && pc && tc !== pc) { host = probe; break; }
+          probe = probe.parentElement;
+        }
+      }
     }
 
-    const left = document.getElementById('topDashboardLeft376');
-    const right = document.getElementById('topDashboardRight376');
-    if (!left || !right) return;
+    let shell = document.getElementById('dashboardShell378');
+    if (!shell) {
+      shell = document.createElement('div');
+      shell.id = 'dashboardShell378';
+      shell.innerHTML = `
+        <div id="topDashboardRow378">
+          <div id="topDashboardLeft378"></div>
+          <div id="topDashboardRight378"></div>
+        </div>
+        <div id="lanDashboard378"></div>
+        <div id="bottomDashboardRow378"></div>
+      `;
+
+      const first = directChildOf(host, topology) || directChildOf(host, progress) || host.firstElementChild;
+      if (first) host.insertBefore(shell, first); else host.appendChild(shell);
+    }
+
+    // Shell sám musí přebít případný původní grid parent.
+    shell.style.setProperty('grid-column','1 / -1','important');
+    shell.style.setProperty('width','100%','important');
+    shell.style.setProperty('max-width','none','important');
+    shell.style.setProperty('min-width','0','important');
+
+    const left = document.getElementById('topDashboardLeft378');
+    const right = document.getElementById('topDashboardRight378');
+    const lanBox = document.getElementById('lanDashboard378');
+    const bottom = document.getElementById('bottomDashboardRow378');
+    if (!left || !right || !lanBox || !bottom) return;
 
     if (topology.parentElement !== left) left.appendChild(topology);
     if (progress.parentElement !== right) right.appendChild(progress);
     if (owut.parentElement !== right) right.appendChild(owut);
+    if (lan && lan.parentElement !== lanBox) lanBox.appendChild(lan);
+    if (maintenance && maintenance.parentElement !== bottom) bottom.appendChild(maintenance);
+    if (backups && backups.parentElement !== bottom) bottom.appendChild(backups);
 
-    // Původní grid/flex pravidla konkrétních karet nesmí přetlačit nový řádek.
-    for (const panel of [topology, progress, owut]) {
+    for (const panel of [topology, progress, owut, lan, maintenance, backups].filter(Boolean)) {
       panel.style.setProperty('width','100%','important');
-      panel.style.setProperty('max-width','100%','important');
+      panel.style.setProperty('max-width','none','important');
+      panel.style.setProperty('min-width','0','important');
       panel.style.setProperty('grid-column','auto','important');
       panel.style.setProperty('grid-row','auto','important');
       panel.style.setProperty('margin-left','0','important');
       panel.style.setProperty('margin-right','0','important');
       panel.style.setProperty('box-sizing','border-box','important');
     }
+
+    // Stejná výška spodních panelů je dána grid stretch. Starý 50/50 wrapper
+    // už nesmí ovlivňovat layout.
+    const oldRow = document.getElementById('maintenanceBackupRow');
+    if (oldRow && oldRow !== bottom && oldRow.children.length === 0) oldRow.remove();
+    const oldTop = document.getElementById('topDashboardRow376');
+    if (oldTop && oldTop.children.length === 0) oldTop.remove();
   }
 
   function makePanel() {

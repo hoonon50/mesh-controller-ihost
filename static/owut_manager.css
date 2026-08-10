@@ -1,4 +1,4 @@
-/* OpenWRT MESH CONTROLLER PRO v3.8.1 — OWUT under topology */
+/* OpenWRT MESH CONTROLLER PRO v3.8.4 — OWUT under topology */
 .owut-panel{margin:0;padding:13px;border:1px solid #34343c;border-radius:14px;background:#1a1a1e;color:#e8e8ec;box-sizing:border-box;width:100%;min-width:0}
 .owut-title{font-size:18px;font-weight:800;letter-spacing:.04em;margin-bottom:3px}
 .owut-auto-title{margin-bottom:11px}
@@ -93,3 +93,26 @@
   .owut-status-grid,.owut-form{grid-template-columns:1fr!important}
   .owut-btn{width:100%}
 }
+
+/* v3.8.2 - stav testovaciho emailu bez dialogu */
+#owutMailState.ok { color: #59d98e; }
+#owutMailState.bad { color: #ff6b78; }
+
+/* v3.8.3 - progress bar vedle testovaciho Gmail tlacitka */
+.owut-mail-actions{align-items:center!important}
+.owut-mail-test-wrap{display:flex;align-items:center;gap:9px;min-width:0;flex:1}
+.owut-mail-test-wrap #owutMailBtn{flex:0 0 auto}
+.owut-mail-progress{position:relative;height:12px;min-width:95px;flex:1;max-width:220px;border-radius:99px;overflow:hidden;background:#2b2b31;border:1px solid #34343c;box-sizing:border-box;transition:border-color .2s,background .2s}
+.owut-mail-progress-fill{position:absolute;inset:0 auto 0 0;width:0;border-radius:99px;transition:width .25s ease,background .2s}
+.owut-mail-progress-mark{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:900;color:#fff;line-height:1}
+.owut-mail-progress.sending .owut-mail-progress-fill{width:42%;background:#39c6e6;animation:owutMailSlide 1.05s ease-in-out infinite}
+.owut-mail-progress.success{border-color:rgba(0,216,111,.55);background:rgba(0,216,111,.12)}
+.owut-mail-progress.success .owut-mail-progress-fill{width:100%;background:#00a95c;animation:none}
+.owut-mail-progress.failure{border-color:rgba(255,77,94,.65);background:rgba(255,77,94,.12)}
+.owut-mail-progress.failure .owut-mail-progress-fill{width:100%;background:#c83d4b;animation:none}
+.owut-mail-progress.idle .owut-mail-progress-fill{width:0;animation:none}
+@keyframes owutMailSlide{0%{transform:translateX(-105%)}50%{transform:translateX(75%)}100%{transform:translateX(240%)}}
+@media(max-width:560px){.owut-mail-test-wrap{width:100%}.owut-mail-test-wrap #owutMailBtn{width:auto}.owut-mail-progress{max-width:none}}
+
+/* v3.8.4 - volba formatu mail reportu */
+#owutMailFormat{font-weight:800;letter-spacing:.04em}

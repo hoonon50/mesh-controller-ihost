@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -44,6 +45,7 @@ DEFAULT_SETTINGS = {
     "gmail_from": "",
     "gmail_to": "",
     "gmail_app_password": "",
+    "mail_report_format": "html",
     "last_auto_date": "",
 }
 
@@ -424,9 +426,15 @@ def _reboot_and_wait(controller, ip: str, label: str, timeout: int = 480) -> Tup
     return True, f"{label} je po restartu online."
 
 
-def _save_pending_mail(subject: str, body: str) -> None:
+def _save_pending_mail(subject: str, text_body: str, html_body: str = "") -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    data = {"subject": subject, "body": body, "created": _now_text()}
+    data = {
+        "subject": subject,
+        "body": text_body,
+        "text_body": text_body,
+        "html_body": html_body,
+        "created": _now_text(),
+    }
     tmp = PENDING_MAIL_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(tmp, 0o600)
@@ -443,10 +451,11 @@ def _retry_pending_mail() -> Tuple[bool, str]:
     try:
         data = json.loads(PENDING_MAIL_FILE.read_text(encoding="utf-8"))
         subject = str(data.get("subject") or "OpenWRT MESH report")
-        body = str(data.get("body") or "")
+        text_body = str(data.get("text_body") or data.get("body") or "")
+        html_body = str(data.get("html_body") or "")
     except Exception as exc:
         return False, f"Čekající report nelze načíst: {exc}"
-    ok, detail = _send_gmail(subject, body)
+    ok, detail = _send_gmail(subject, text_body, html_body)
     if ok:
         try:
             PENDING_MAIL_FILE.unlink()
@@ -455,8 +464,8 @@ def _retry_pending_mail() -> Tuple[bool, str]:
     return ok, detail
 
 
-def _send_report_or_queue(subject: str, body: str) -> Tuple[bool, str]:
-    ok, detail = _send_gmail(subject, body)
+def _send_report_or_queue(subject: str, text_body: str, html_body: str = "") -> Tuple[bool, str]:
+    ok, detail = _send_gmail(subject, text_body, html_body)
     if ok:
         try:
             PENDING_MAIL_FILE.unlink()
@@ -464,13 +473,13 @@ def _send_report_or_queue(subject: str, body: str) -> Tuple[bool, str]:
             pass
         return True, detail
     try:
-        _save_pending_mail(subject, body)
+        _save_pending_mail(subject, text_body, html_body)
         return False, f"{detail} Report uložen do /data a bude automaticky odeslán později."
     except Exception as exc:
         return False, f"{detail} Navíc se nepodařilo uložit čekající report: {exc}"
 
 
-def _send_gmail(subject: str, body: str) -> Tuple[bool, str]:
+def _send_gmail(subject: str, text_body: str, html_body: str = "") -> Tuple[bool, str]:
     settings = _load_settings()
     sender = str(settings.get("gmail_from") or "").strip()
     recipient = str(settings.get("gmail_to") or "").strip()
@@ -478,11 +487,17 @@ def _send_gmail(subject: str, body: str) -> Tuple[bool, str]:
     if not sender or not recipient or not password:
         return False, "Gmail není kompletně nastavený."
 
+    report_format = str(settings.get("mail_report_format") or "html").strip().lower()
+    if report_format not in {"html", "text"}:
+        report_format = "html"
+
     msg = EmailMessage()
     msg["From"] = sender
     msg["To"] = recipient
     msg["Subject"] = subject
-    msg.set_content(body)
+    msg.set_content(text_body or "OpenWRT MESH CONTROLLER PRO")
+    if report_format == "html" and html_body:
+        msg.add_alternative(html_body, subtype="html")
 
     try:
         context = ssl.create_default_context()
@@ -494,7 +509,7 @@ def _send_gmail(subject: str, body: str) -> Tuple[bool, str]:
         return False, str(exc)
 
 
-def _build_report(kind: str, ok: bool, rows: List[Dict[str, Any]], backup_id: str = "", extra: str = "") -> str:
+def _build_report_text(kind: str, ok: bool, rows: List[Dict[str, Any]], backup_id: str = "", extra: str = "") -> str:
     lines = [
         "OpenWRT MESH CONTROLLER PRO",
         "",
@@ -518,6 +533,89 @@ def _build_report(kind: str, ok: bool, rows: List[Dict[str, Any]], backup_id: st
     lines.extend(["", f"VÝSLEDEK: {'VŠE V POŘÁDKU' if ok else 'CHYBA / NEDOKONČENO'}"])
     return "\n".join(lines)
 
+
+def _build_report_html(kind: str, ok: bool, rows: List[Dict[str, Any]], backup_id: str = "", extra: str = "") -> str:
+    completed = sum(1 for row in rows if row.get("ok"))
+    total = 5
+    color = "#16a34a" if ok else "#dc2626"
+    result_title = "VÝSLEDEK: VŠE V POŘÁDKU" if ok else "VÝSLEDEK: CHYBA / NEDOKONČENO"
+    result_icon = "✓" if ok else "✕"
+    by_ip = {str(row.get("ip") or ""): row for row in rows}
+
+    cards = []
+    for ip, fallback_name in ROUTERS:
+        row = by_ip.get(ip)
+        if row:
+            row_ok = bool(row.get("ok"))
+            status = "HOTOVO" if row_ok else "CHYBA"
+            status_color = "#15803d" if row_ok else "#dc2626"
+            mark = "✓" if row_ok else "✕"
+            name = html.escape(str(row.get("name") or fallback_name))
+            detail = " ".join(str(row.get("detail") or row.get("error") or "").split())
+        else:
+            status = "NEPROVEDENO"
+            status_color = "#64748b"
+            mark = "—"
+            name = html.escape(fallback_name)
+            detail = ""
+        if len(detail) > 130:
+            detail = detail[:130] + "…"
+        cards.append(
+            '<td style="width:20%;padding:5px;vertical-align:top;">'
+            '<div style="border:1px solid #d7dde5;border-radius:10px;padding:12px 10px;background:#ffffff;min-height:112px;font-family:Arial,sans-serif;">'
+            f'<div style="font-size:15px;font-weight:700;color:#111827;">{name}</div>'
+            f'<div style="font-size:12px;color:#475569;margin:3px 0 10px;">{html.escape(ip)}</div>'
+            f'<div style="display:inline-block;padding:5px 9px;border-radius:999px;background:#f8fafc;color:{status_color};font-size:11px;font-weight:700;">{mark} {status}</div>'
+            f'<div style="font-size:10px;line-height:1.35;color:#64748b;margin-top:10px;">{html.escape(detail) if detail else "&nbsp;"}</div>'
+            '</div></td>'
+        )
+
+    note = ""
+    if extra:
+        note_bg = "#f0fdf4" if ok else "#fef2f2"
+        note_border = "#bbf7d0" if ok else "#fecaca"
+        note_color = "#166534" if ok else "#991b1b"
+        note_title = "Poznámka" if ok else "Důvod / detail"
+        note = (
+            '<tr><td style="padding:0 24px 22px;">'
+            f'<div style="border:1px solid {note_border};background:{note_bg};border-radius:9px;padding:12px 14px;color:{note_color};font-family:Arial,sans-serif;font-size:13px;line-height:1.45;">'
+            f'<strong>{note_title}</strong><br>{html.escape(str(extra))}</div></td></tr>'
+        )
+
+    backup = html.escape(backup_id) if backup_id else "—"
+    success = round(100 * completed / total)
+    return f'''<!doctype html>
+<html><body style="margin:0;padding:0;background:#f3f6f9;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f3f6f9;padding:20px 8px;"><tr><td align="center">
+<table role="presentation" width="760" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:760px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #dce3ea;">
+<tr><td style="background:#071a2d;padding:20px 24px;color:#ffffff;font-family:Arial,sans-serif;"><div style="font-size:20px;font-weight:700;">◉ OpenWRT MESH CONTROLLER PRO</div><div style="font-size:12px;color:#cbd5e1;margin-top:4px;">{html.escape(kind)}</div></td></tr>
+<tr><td style="padding:18px 20px 10px;"><div style="background:{color};border-radius:10px;padding:17px 20px;color:white;font-family:Arial,sans-serif;"><div style="font-size:20px;font-weight:700;">{result_icon} &nbsp;{result_title}</div><div style="font-size:13px;margin-top:5px;">{completed} / {total} routerů úspěšně dokončeno &nbsp; • &nbsp; {_now_text()}</div></div></td></tr>
+<tr><td style="padding:10px 20px 4px;font-family:Arial,sans-serif;font-size:15px;font-weight:700;color:#1f2937;">STAV ROUTERŮ</td></tr>
+<tr><td style="padding:2px 15px 18px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr>{''.join(cards)}</tr></table></td></tr>
+<tr><td style="padding:0 20px 18px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid #e5e7eb;background:#f8fafc;font-family:Arial,sans-serif;"><tr>
+<td style="width:33.33%;padding:10px;text-align:center;border-right:1px solid #e5e7eb;"><div style="font-size:11px;color:#64748b;">Operace</div><div style="font-size:13px;font-weight:700;color:#111827;margin-top:3px;">{html.escape(kind)}</div></td>
+<td style="width:33.33%;padding:10px;text-align:center;border-right:1px solid #e5e7eb;"><div style="font-size:11px;color:#64748b;">Záloha</div><div style="font-size:13px;font-weight:700;color:#111827;margin-top:3px;">{backup}</div></td>
+<td style="width:33.33%;padding:10px;text-align:center;"><div style="font-size:11px;color:#64748b;">Úspěšnost</div><div style="font-size:13px;font-weight:700;color:{color};margin-top:3px;">{success} %</div></td>
+</tr></table></td></tr>
+{note}
+<tr><td style="background:#071a2d;padding:13px 24px;color:#cbd5e1;font-family:Arial,sans-serif;font-size:10px;">OpenWRT MESH CONTROLLER PRO &nbsp; • &nbsp; Tento e-mail byl odeslán automaticky.</td></tr>
+</table></td></tr></table></body></html>'''
+
+
+def _build_test_email() -> Tuple[str, str]:
+    now = _now_text()
+    text_body = (
+        "OpenWRT MESH CONTROLLER PRO\n\nTESTOVACÍ E-MAIL\n"
+        f"Datum: {now}\n\nSMTP komunikace funguje a nastavení e-mailu je v pořádku."
+    )
+    html_body = f'''<!doctype html><html><body style="margin:0;background:#f3f6f9;padding:20px 8px;">
+<table role="presentation" width="100%"><tr><td align="center"><table role="presentation" width="620" style="width:100%;max-width:620px;background:#fff;border:1px solid #dce3ea;border-radius:14px;overflow:hidden;border-spacing:0;">
+<tr><td style="background:#071a2d;padding:20px 24px;color:white;font-family:Arial,sans-serif;"><b style="font-size:19px;">◉ OpenWRT MESH CONTROLLER PRO</b><div style="font-size:12px;color:#cbd5e1;margin-top:4px;">Test nastavení Gmailu</div></td></tr>
+<tr><td style="padding:18px 20px;"><div style="background:#1267c4;color:white;border-radius:10px;padding:16px 18px;font-family:Arial,sans-serif;"><b style="font-size:19px;">✉ &nbsp; TESTOVACÍ E-MAIL</b><div style="font-size:12px;margin-top:5px;">Nastavení e-mailu je v pořádku</div></div></td></tr>
+<tr><td style="padding:10px 28px 28px;text-align:center;font-family:Arial,sans-serif;color:#1f2937;"><div style="font-size:44px;color:#1267c4;">✉</div><div style="font-size:15px;font-weight:700;margin:8px 0;">OpenWRT MESH CONTROLLER PRO</div><div style="font-size:13px;line-height:1.5;color:#475569;">Testovací zpráva byla úspěšně vytvořena.<br>SMTP komunikace s Gmailem funguje.</div><div style="margin-top:18px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:9px;padding:11px;font-size:12px;color:#1e3a8a;text-align:left;"><b>Detaily testu</b><br>Datum: {html.escape(now)}<br>Výsledek: ÚSPĚCH</div></td></tr>
+<tr><td style="background:#071a2d;padding:12px 20px;color:#cbd5e1;font-family:Arial,sans-serif;font-size:10px;">OpenWRT MESH CONTROLLER PRO</td></tr>
+</table></td></tr></table></body></html>'''
+    return text_body, html_body
 
 def _upgrade_worker(controller, automatic: bool = False) -> None:
     if _snapshot_operation().get("running"):
@@ -642,10 +740,13 @@ def _upgrade_worker(controller, automatic: bool = False) -> None:
         _op_log(f"CHYBA: {exc}")
         _op_finish(False, f"OWUT aktualizace nedokončena: {exc}", {"ok": False, "rows": rows, "backup_id": backup_id})
     finally:
-        report = _build_report("AUTOMATICKÝ OWUT SYSUPGRADE" if automatic else "RUČNÍ OWUT SYSUPGRADE", overall_ok, rows, backup_id, extra)
+        report_kind = "AUTOMATICKÝ OWUT SYSUPGRADE" if automatic else "RUČNÍ OWUT SYSUPGRADE"
+        report_text = _build_report_text(report_kind, overall_ok, rows, backup_id, extra)
+        report_html = _build_report_html(report_kind, overall_ok, rows, backup_id, extra)
         mail_ok, mail_detail = _send_report_or_queue(
             f"{'OK' if overall_ok else 'CHYBA'} – OpenWRT MESH OWUT aktualizace",
-            report,
+            report_text,
+            report_html,
         )
         _op_log(f"Gmail report: {'odeslán' if mail_ok else 'neodeslán'} – {mail_detail}")
 
@@ -823,6 +924,10 @@ def register_owut_manager(app, controller) -> None:
         data["time"] = tm
         data["gmail_from"] = str(incoming.get("gmail_from", data.get("gmail_from", ""))).strip()
         data["gmail_to"] = str(incoming.get("gmail_to", data.get("gmail_to", ""))).strip()
+        report_format = str(incoming.get("mail_report_format", data.get("mail_report_format", "html"))).strip().lower()
+        if report_format not in {"html", "text"}:
+            return jsonify({"ok": False, "error": "MAIL REPORT musí být HTML nebo TEXT."}), 400
+        data["mail_report_format"] = report_format
         password = str(incoming.get("gmail_app_password", ""))
         if password.strip():
             data["gmail_app_password"] = password.strip()
@@ -836,9 +941,11 @@ def register_owut_manager(app, controller) -> None:
 
     @app.post("/api/owut/test-email")
     def owut_test_email():
+        text_body, html_body = _build_test_email()
         ok, detail = _send_gmail(
             "TEST – OpenWRT MESH CONTROLLER PRO",
-            f"Testovací e-mail z OpenWRT MESH CONTROLLER PRO.\n\nDatum: {_now_text()}\n\nSMTP komunikace funguje.",
+            text_body,
+            html_body,
         )
         return jsonify({"ok": ok, "message": detail}), (200 if ok else 400)
 

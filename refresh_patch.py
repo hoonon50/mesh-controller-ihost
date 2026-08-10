@@ -38,6 +38,6 @@ text = re.sub(
 
 if text != original:
     app_js.write_text(text, encoding='utf-8')
-    print('v3.8.1: app.js refresh intervals tuned')
+    print('v3.8.2: app.js refresh intervals tuned')
 else:
-    print('v3.8.1: no safely identifiable app.js topology timer; main refresh left unchanged')
+    print('v3.8.2: no safely identifiable app.js topology timer; main refresh left unchanged')

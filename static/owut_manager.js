@@ -1,8 +1,8 @@
 (() => {
   'use strict';
 
-  if (window.__OWUT_MANAGER_381__) return;
-  window.__OWUT_MANAGER_381__ = true;
+  if (window.__OWUT_MANAGER_383__) return;
+  window.__OWUT_MANAGER_383__ = true;
 
   const WEEKDAYS = ['Pondělí','Úterý','Středa','Čtvrtek','Pátek','Sobota','Neděle'];
 
@@ -69,11 +69,18 @@
         <label><span>Gmail odesílatel</span><input id="owutFrom" type="email" placeholder="vas@gmail.com"></label>
         <label><span>Odeslat report na</span><input id="owutTo" type="email" placeholder="prijemce@gmail.com"></label>
         <label><span>Heslo aplikace Gmail</span><input id="owutPass" type="password" autocomplete="new-password" placeholder="16místné heslo aplikace"></label>
+        <label><span>MAIL REPORT</span><select id="owutMailFormat"><option value="html">HTML</option><option value="text">TEXT</option></select></label>
       </div>
       <div class="owut-small" id="owutPassState"></div>
-      <div class="owut-actions small-row">
+      <div class="owut-actions small-row owut-mail-actions">
         <button class="owut-btn good" id="owutSaveBtn">ULOŽIT NASTAVENÍ</button>
-        <button class="owut-btn" id="owutMailBtn">ODESLAT TESTOVACÍ EMAIL</button>
+        <div class="owut-mail-test-wrap">
+          <button class="owut-btn" id="owutMailBtn">ODESLAT TESTOVACÍ EMAIL</button>
+          <div class="owut-mail-progress idle" id="owutMailProgress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" title="Připraveno">
+            <div class="owut-mail-progress-fill"></div>
+            <span class="owut-mail-progress-mark" aria-hidden="true"></span>
+          </div>
+        </div>
       </div>`;
 
     const main = document.querySelector('main,.container,.content') || document.body;
@@ -185,6 +192,7 @@
       document.getElementById('owutTime').value = s.time || '03:00';
       document.getElementById('owutFrom').value = s.gmail_from || '';
       document.getElementById('owutTo').value = s.gmail_to || '';
+      document.getElementById('owutMailFormat').value = (s.mail_report_format || 'html').toLowerCase();
       document.getElementById('owutPassState').textContent = s.gmail_password_saved
         ? 'Heslo aplikace je uložené v /data. Pokud ho necháš prázdné, nezmění se.'
         : 'Heslo aplikace zatím není uložené.';
@@ -199,6 +207,7 @@
       gmail_from: document.getElementById('owutFrom').value.trim(),
       gmail_to: document.getElementById('owutTo').value.trim(),
       gmail_app_password: document.getElementById('owutPass').value.trim(),
+      mail_report_format: document.getElementById('owutMailFormat').value,
     };
     try {
       await api('/api/owut/settings', {method:'POST', body:JSON.stringify(payload)});
@@ -208,11 +217,31 @@
     } catch(e) { alert(e.message); }
   }
 
+  function setMailProgress(mode, title='') {
+    const progress = document.getElementById('owutMailProgress');
+    if (!progress) return;
+    progress.classList.remove('idle','sending','success','failure');
+    progress.classList.add(mode);
+    progress.title = title || ({idle:'Připraveno',sending:'Odesílám testovací e-mail…',success:'Testovací e-mail byl odeslán.',failure:'Testovací e-mail se nepodařilo odeslat.'}[mode] || '');
+    progress.setAttribute('aria-valuenow', mode === 'success' || mode === 'failure' ? '100' : '0');
+    const mark = progress.querySelector('.owut-mail-progress-mark');
+    if (mark) mark.textContent = mode === 'success' ? '✓' : (mode === 'failure' ? '✕' : '');
+  }
+
   async function testEmail() {
+    const btn = document.getElementById('owutMailBtn');
+    if (btn) btn.disabled = true;
+    setMailProgress('sending');
     try {
       const r = await api('/api/owut/test-email', {method:'POST', body:'{}'});
-      alert(r.message || 'Testovací e-mail odeslán.');
-    } catch(e) { alert(e.message); }
+      setMailProgress('success', r.message || 'Testovací e-mail byl odeslán.');
+      setTimeout(() => setMailProgress('idle'), 5000);
+    } catch(e) {
+      setMailProgress('failure', `Chyba: ${e.message}`);
+      setTimeout(() => setMailProgress('idle'), 8000);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   async function refreshStatus() {

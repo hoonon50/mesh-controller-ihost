@@ -10,6 +10,7 @@ import ssl
 import tarfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
@@ -40,7 +41,7 @@ EXTROOT_ADD = "block-mount,kmod-fs-ext4,kmod-usb-storage,kmod-usb-storage-uas"
 
 DEFAULT_SETTINGS = {
     "auto_enabled": False,
-    "weekday": 6,              # neděle (0 = pondělí)
+    "weekday": 6,              # -1 = každý den, 0 = pondělí ... 6 = neděle
     "time": "03:00",
     "gmail_from": "",
     "gmail_to": "",
@@ -135,6 +136,120 @@ def _op_finish(ok: bool, message: str, result: Optional[Dict[str, Any]] = None) 
 def _snapshot_operation() -> Dict[str, Any]:
     with _state_lock:
         return json.loads(json.dumps(_operation, ensure_ascii=False))
+
+
+def _normalize_temp(raw: str) -> Optional[float]:
+    try:
+        value = float(str(raw).strip())
+    except Exception:
+        return None
+    if abs(value) >= 1000:
+        value /= 1000.0
+    if not (-20.0 <= value <= 150.0):
+        return None
+    return round(value, 1)
+
+
+def _pick_temperature(candidates: List[Tuple[str, float]]) -> Optional[float]:
+    if not candidates:
+        return None
+
+    def score(item: Tuple[str, float]) -> Tuple[int, float]:
+        label, value = item
+        low = label.lower()
+        rank = 0
+        for token, points in (("cpu", 100), ("soc", 90), ("package", 80), ("core", 70), ("thermal", 50)):
+            if token in low:
+                rank = max(rank, points)
+        return rank, value
+
+    return max(candidates, key=score)[1]
+
+
+def _router_temperature(controller, ip: str) -> Optional[float]:
+    cmd = """for z in /sys/class/thermal/thermal_zone*; do
+  [ -r "$z/temp" ] || continue
+  ty="$(cat "$z/type" 2>/dev/null || basename "$z")"
+  tv="$(cat "$z/temp" 2>/dev/null)"
+  printf 'T\t%s\t%s\n' "$ty" "$tv"
+done
+for h in /sys/class/hwmon/hwmon*/temp*_input; do
+  [ -r "$h" ] || continue
+  base="${h%_input}"
+  label="$(cat "${base}_label" 2>/dev/null || basename "$h")"
+  tv="$(cat "$h" 2>/dev/null)"
+  printf 'H\t%s\t%s\n' "$label" "$tv"
+done"""
+    try:
+        out, _err, code = _ssh_exec(controller, ip, cmd, 8)
+        if code not in (0, None):
+            return None
+        candidates: List[Tuple[str, float]] = []
+        for line in str(out or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            value = _normalize_temp(parts[2])
+            if value is not None:
+                candidates.append((parts[1], value))
+        return _pick_temperature(candidates)
+    except Exception:
+        return None
+
+
+def _ihost_temperature() -> Optional[float]:
+    candidates: List[Tuple[str, float]] = []
+    try:
+        thermal = Path("/sys/class/thermal")
+        if thermal.exists():
+            for zone in thermal.glob("thermal_zone*"):
+                try:
+                    temp_path = zone / "temp"
+                    if not temp_path.exists():
+                        continue
+                    type_path = zone / "type"
+                    label = type_path.read_text(encoding="utf-8", errors="ignore").strip() if type_path.exists() else zone.name
+                    value = _normalize_temp(temp_path.read_text(encoding="utf-8", errors="ignore"))
+                    if value is not None:
+                        candidates.append((label, value))
+                except Exception:
+                    pass
+        hwmon = Path("/sys/class/hwmon")
+        if hwmon.exists():
+            for inp in hwmon.glob("hwmon*/temp*_input"):
+                try:
+                    base = str(inp)[:-6]
+                    label_path = Path(base + "_label")
+                    label = label_path.read_text(encoding="utf-8", errors="ignore").strip() if label_path.exists() else inp.name
+                    value = _normalize_temp(inp.read_text(encoding="utf-8", errors="ignore"))
+                    if value is not None:
+                        candidates.append((label, value))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return _pick_temperature(candidates)
+
+
+def _collect_temperatures(controller) -> Dict[str, Any]:
+    router_temps: Dict[str, Optional[float]] = {ip: None for ip, _ in ROUTERS}
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(_router_temperature, controller, ip): ip for ip, _ in ROUTERS}
+        for future in as_completed(futures):
+            ip = futures[future]
+            try:
+                router_temps[ip] = future.result()
+            except Exception:
+                router_temps[ip] = None
+    return {"routers": router_temps, "ihost": _ihost_temperature()}
+
+
+def _temp_text(value: Optional[float]) -> str:
+    if value is None:
+        return "N/A"
+    if abs(value - round(value)) < 0.05:
+        return f"{int(round(value))} °C"
+    return f"{value:.1f} °C"
 
 
 def _ssh_exec(controller, ip: str, cmd: str, timeout: int = 30) -> Tuple[str, str, int]:
@@ -509,7 +624,16 @@ def _send_gmail(subject: str, text_body: str, html_body: str = "") -> Tuple[bool
         return False, str(exc)
 
 
-def _build_report_text(kind: str, ok: bool, rows: List[Dict[str, Any]], backup_id: str = "", extra: str = "") -> str:
+def _build_report_text(
+    kind: str,
+    ok: bool,
+    rows: List[Dict[str, Any]],
+    backup_id: str = "",
+    extra: str = "",
+    temperatures: Optional[Dict[str, Any]] = None,
+) -> str:
+    temps = temperatures or {}
+    router_temps = temps.get("routers") or {}
     lines = [
         "OpenWRT MESH CONTROLLER PRO",
         "",
@@ -518,10 +642,17 @@ def _build_report_text(kind: str, ok: bool, rows: List[Dict[str, Any]], backup_i
     ]
     if backup_id:
         lines.append(f"Záloha: {backup_id}")
-    lines.append("")
+
+    lines.extend(["", "TEPLOTY CPU:"])
+    for ip, label in ROUTERS:
+        lines.append(f"{label:<8} {ip:<15} {_temp_text(router_temps.get(ip))}")
+    lines.append(f"iHost                    {_temp_text(temps.get('ihost'))}")
+
+    lines.extend(["", "STAV ROUTERŮ:"])
     for row in rows:
         status = "OK" if row.get("ok") else "CHYBA"
-        lines.append(f"{row.get('name', ''):<8} {row.get('ip', ''):<15} {status}")
+        ip = str(row.get("ip") or "")
+        lines.append(f"{row.get('name', ''):<8} {ip:<15} {status} | CPU {_temp_text(router_temps.get(ip))}")
         detail = str(row.get("detail") or row.get("error") or "").strip()
         if detail:
             detail = " ".join(detail.split())
@@ -531,16 +662,26 @@ def _build_report_text(kind: str, ok: bool, rows: List[Dict[str, Any]], backup_i
     if extra:
         lines.extend(["", extra])
     lines.extend(["", f"VÝSLEDEK: {'VŠE V POŘÁDKU' if ok else 'CHYBA / NEDOKONČENO'}"])
-    return "\n".join(lines)
+    return "\\n".join(lines)
 
 
-def _build_report_html(kind: str, ok: bool, rows: List[Dict[str, Any]], backup_id: str = "", extra: str = "") -> str:
+def _build_report_html(
+    kind: str,
+    ok: bool,
+    rows: List[Dict[str, Any]],
+    backup_id: str = "",
+    extra: str = "",
+    temperatures: Optional[Dict[str, Any]] = None,
+) -> str:
     completed = sum(1 for row in rows if row.get("ok"))
     total = 5
     color = "#16a34a" if ok else "#dc2626"
     result_title = "VÝSLEDEK: VŠE V POŘÁDKU" if ok else "VÝSLEDEK: CHYBA / NEDOKONČENO"
     result_icon = "✓" if ok else "✕"
     by_ip = {str(row.get("ip") or ""): row for row in rows}
+    temps = temperatures or {}
+    router_temps = temps.get("routers") or {}
+    ihost_temp = temps.get("ihost")
 
     cards = []
     for ip, fallback_name in ROUTERS:
@@ -562,11 +703,12 @@ def _build_report_html(kind: str, ok: bool, rows: List[Dict[str, Any]], backup_i
             detail = detail[:130] + "…"
         cards.append(
             '<td style="width:20%;padding:5px;vertical-align:top;">'
-            '<div style="border:1px solid #d7dde5;border-radius:10px;padding:12px 10px;background:#ffffff;min-height:112px;font-family:Arial,sans-serif;">'
+            '<div style="border:1px solid #d7dde5;border-radius:10px;padding:12px 10px;background:#ffffff;min-height:128px;font-family:Arial,sans-serif;">'
             f'<div style="font-size:15px;font-weight:700;color:#111827;">{name}</div>'
             f'<div style="font-size:12px;color:#475569;margin:3px 0 10px;">{html.escape(ip)}</div>'
             f'<div style="display:inline-block;padding:5px 9px;border-radius:999px;background:#f8fafc;color:{status_color};font-size:11px;font-weight:700;">{mark} {status}</div>'
-            f'<div style="font-size:10px;line-height:1.35;color:#64748b;margin-top:10px;">{html.escape(detail) if detail else "&nbsp;"}</div>'
+            f'<div style="font-size:11px;color:#334155;margin-top:9px;"><b>CPU:</b> {html.escape(_temp_text(router_temps.get(ip)))}</div>'
+            f'<div style="font-size:10px;line-height:1.35;color:#64748b;margin-top:7px;">{html.escape(detail) if detail else "&nbsp;"}</div>'
             '</div></td>'
         )
 
@@ -590,8 +732,9 @@ def _build_report_html(kind: str, ok: bool, rows: List[Dict[str, Any]], backup_i
 <table role="presentation" width="760" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:760px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #dce3ea;">
 <tr><td style="background:#071a2d;padding:20px 24px;color:#ffffff;font-family:Arial,sans-serif;"><div style="font-size:20px;font-weight:700;">◉ OpenWRT MESH CONTROLLER PRO</div><div style="font-size:12px;color:#cbd5e1;margin-top:4px;">{html.escape(kind)}</div></td></tr>
 <tr><td style="padding:18px 20px 10px;"><div style="background:{color};border-radius:10px;padding:17px 20px;color:white;font-family:Arial,sans-serif;"><div style="font-size:20px;font-weight:700;">{result_icon} &nbsp;{result_title}</div><div style="font-size:13px;margin-top:5px;">{completed} / {total} routerů úspěšně dokončeno &nbsp; • &nbsp; {_now_text()}</div></div></td></tr>
-<tr><td style="padding:10px 20px 4px;font-family:Arial,sans-serif;font-size:15px;font-weight:700;color:#1f2937;">STAV ROUTERŮ</td></tr>
-<tr><td style="padding:2px 15px 18px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr>{''.join(cards)}</tr></table></td></tr>
+<tr><td style="padding:10px 20px 4px;font-family:Arial,sans-serif;font-size:15px;font-weight:700;color:#1f2937;">STAV ROUTERŮ + CPU</td></tr>
+<tr><td style="padding:2px 15px 14px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr>{''.join(cards)}</tr></table></td></tr>
+<tr><td style="padding:0 20px 14px;"><div style="border:1px solid #bae6fd;background:#f0f9ff;border-radius:9px;padding:11px 14px;font-family:Arial,sans-serif;color:#0c4a6e;font-size:13px;"><b>iHost CPU / SoC:</b> {html.escape(_temp_text(ihost_temp))}</div></td></tr>
 <tr><td style="padding:0 20px 18px;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="border:1px solid #e5e7eb;background:#f8fafc;font-family:Arial,sans-serif;"><tr>
 <td style="width:33.33%;padding:10px;text-align:center;border-right:1px solid #e5e7eb;"><div style="font-size:11px;color:#64748b;">Operace</div><div style="font-size:13px;font-weight:700;color:#111827;margin-top:3px;">{html.escape(kind)}</div></td>
 <td style="width:33.33%;padding:10px;text-align:center;border-right:1px solid #e5e7eb;"><div style="font-size:11px;color:#64748b;">Záloha</div><div style="font-size:13px;font-weight:700;color:#111827;margin-top:3px;">{backup}</div></td>
@@ -602,20 +745,29 @@ def _build_report_html(kind: str, ok: bool, rows: List[Dict[str, Any]], backup_i
 </table></td></tr></table></body></html>'''
 
 
-def _build_test_email() -> Tuple[str, str]:
+def _build_test_email(controller) -> Tuple[str, str]:
     now = _now_text()
+    temperatures = _collect_temperatures(controller)
+    router_temps = temperatures.get("routers") or {}
+    ihost_temp = temperatures.get("ihost")
+    temp_lines = "\\n".join(f"{label}: {_temp_text(router_temps.get(ip))}" for ip, label in ROUTERS)
     text_body = (
-        "OpenWRT MESH CONTROLLER PRO\n\nTESTOVACÍ E-MAIL\n"
-        f"Datum: {now}\n\nSMTP komunikace funguje a nastavení e-mailu je v pořádku."
+        "OpenWRT MESH CONTROLLER PRO\\n\\nTESTOVACÍ E-MAIL\\n"
+        f"Datum: {now}\\n\\nSMTP komunikace funguje a nastavení e-mailu je v pořádku.\\n\\n"
+        f"TEPLOTY CPU:\\n{temp_lines}\\niHost: {_temp_text(ihost_temp)}"
+    )
+    html_temp_rows = "<br>".join(
+        html.escape(f"{label}: {_temp_text(router_temps.get(ip))}") for ip, label in ROUTERS
     )
     html_body = f'''<!doctype html><html><body style="margin:0;background:#f3f6f9;padding:20px 8px;">
 <table role="presentation" width="100%"><tr><td align="center"><table role="presentation" width="620" style="width:100%;max-width:620px;background:#fff;border:1px solid #dce3ea;border-radius:14px;overflow:hidden;border-spacing:0;">
 <tr><td style="background:#071a2d;padding:20px 24px;color:white;font-family:Arial,sans-serif;"><b style="font-size:19px;">◉ OpenWRT MESH CONTROLLER PRO</b><div style="font-size:12px;color:#cbd5e1;margin-top:4px;">Test nastavení Gmailu</div></td></tr>
 <tr><td style="padding:18px 20px;"><div style="background:#1267c4;color:white;border-radius:10px;padding:16px 18px;font-family:Arial,sans-serif;"><b style="font-size:19px;">✉ &nbsp; TESTOVACÍ E-MAIL</b><div style="font-size:12px;margin-top:5px;">Nastavení e-mailu je v pořádku</div></div></td></tr>
-<tr><td style="padding:10px 28px 28px;text-align:center;font-family:Arial,sans-serif;color:#1f2937;"><div style="font-size:44px;color:#1267c4;">✉</div><div style="font-size:15px;font-weight:700;margin:8px 0;">OpenWRT MESH CONTROLLER PRO</div><div style="font-size:13px;line-height:1.5;color:#475569;">Testovací zpráva byla úspěšně vytvořena.<br>SMTP komunikace s Gmailem funguje.</div><div style="margin-top:18px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:9px;padding:11px;font-size:12px;color:#1e3a8a;text-align:left;"><b>Detaily testu</b><br>Datum: {html.escape(now)}<br>Výsledek: ÚSPĚCH</div></td></tr>
+<tr><td style="padding:10px 28px 28px;text-align:center;font-family:Arial,sans-serif;color:#1f2937;"><div style="font-size:44px;color:#1267c4;">✉</div><div style="font-size:15px;font-weight:700;margin:8px 0;">OpenWRT MESH CONTROLLER PRO</div><div style="font-size:13px;line-height:1.5;color:#475569;">Testovací zpráva byla úspěšně vytvořena.<br>SMTP komunikace s Gmailem funguje.</div><div style="margin-top:18px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:9px;padding:11px;font-size:12px;color:#1e3a8a;text-align:left;"><b>Detaily testu</b><br>Datum: {html.escape(now)}<br>Výsledek: ÚSPĚCH</div><div style="margin-top:10px;border:1px solid #d7dde5;background:#f8fafc;border-radius:9px;padding:11px;font-size:12px;color:#334155;text-align:left;"><b>Teploty CPU</b><br>{html_temp_rows}<br><b>iHost: {html.escape(_temp_text(ihost_temp))}</b></div></td></tr>
 <tr><td style="background:#071a2d;padding:12px 20px;color:#cbd5e1;font-family:Arial,sans-serif;font-size:10px;">OpenWRT MESH CONTROLLER PRO</td></tr>
 </table></td></tr></table></body></html>'''
     return text_body, html_body
+
 
 def _upgrade_worker(controller, automatic: bool = False) -> None:
     if _snapshot_operation().get("running"):
@@ -741,8 +893,10 @@ def _upgrade_worker(controller, automatic: bool = False) -> None:
         _op_finish(False, f"OWUT aktualizace nedokončena: {exc}", {"ok": False, "rows": rows, "backup_id": backup_id})
     finally:
         report_kind = "AUTOMATICKÝ OWUT SYSUPGRADE" if automatic else "RUČNÍ OWUT SYSUPGRADE"
-        report_text = _build_report_text(report_kind, overall_ok, rows, backup_id, extra)
-        report_html = _build_report_html(report_kind, overall_ok, rows, backup_id, extra)
+        _op_log("Měřím aktuální CPU teploty pro report…")
+        temperatures = _collect_temperatures(controller)
+        report_text = _build_report_text(report_kind, overall_ok, rows, backup_id, extra, temperatures)
+        report_html = _build_report_html(report_kind, overall_ok, rows, backup_id, extra, temperatures)
         mail_ok, mail_detail = _send_report_or_queue(
             f"{'OK' if overall_ok else 'CHYBA'} – OpenWRT MESH OWUT aktualizace",
             report_text,
@@ -889,7 +1043,7 @@ def _scheduler_loop(controller) -> None:
                     hh, mm = 3, 0
                 weekday = int(settings.get("weekday", 6))
                 today = now.strftime("%Y-%m-%d")
-                due = now.weekday() == weekday and now.hour == hh and now.minute == mm
+                due = (weekday == -1 or now.weekday() == weekday) and now.hour == hh and now.minute == mm
                 if due and settings.get("last_auto_date") != today and not _snapshot_operation().get("running"):
                     settings["last_auto_date"] = today
                     _save_settings(settings)
@@ -915,7 +1069,7 @@ def register_owut_manager(app, controller) -> None:
         data["auto_enabled"] = bool(incoming.get("auto_enabled", False))
         try:
             wd = int(incoming.get("weekday", data.get("weekday", 6)))
-            data["weekday"] = wd if 0 <= wd <= 6 else 6
+            data["weekday"] = wd if -1 <= wd <= 6 else 6
         except Exception:
             data["weekday"] = 6
         tm = str(incoming.get("time", data.get("time", "03:00"))).strip()
@@ -941,7 +1095,7 @@ def register_owut_manager(app, controller) -> None:
 
     @app.post("/api/owut/test-email")
     def owut_test_email():
-        text_body, html_body = _build_test_email()
+        text_body, html_body = _build_test_email(controller)
         ok, detail = _send_gmail(
             "TEST – OpenWRT MESH CONTROLLER PRO",
             text_body,

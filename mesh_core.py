@@ -35,6 +35,20 @@ DEFAULT_CONFIG = {
 MAC_RE = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}", re.I)
 
 
+def normalize_radio_band(value: Any) -> str:
+    """Převede OpenWrt band/hwmode/radio označení na text pro UI."""
+    raw = str(value or "").strip().lower().replace(" ", "")
+    if not raw:
+        return ""
+    if any(token in raw for token in ("2g", "2.4", "2,4", "11g", "11b")) or raw == "radio0":
+        return "2,4 GHz"
+    if any(token in raw for token in ("5g", "5ghz", "11a")) or raw == "radio1":
+        return "5 GHz"
+    if any(token in raw for token in ("6g", "6ghz")) or raw == "radio2":
+        return "6 GHz"
+    return ""
+
+
 def ensure_config() -> Dict[str, Any]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -376,6 +390,7 @@ done; printf 'PORTS_END\n'
                                 "mac": sta["mac"], "ifname": ifname,
                                 "ssid": info.get("ssid", ""), "signal": sta.get("signal"),
                                 "tx": sta.get("tx", ""), "rx": sta.get("rx", ""),
+                                "band": normalize_radio_band(info.get("band", "")),
                             })
                     else:
                         for sta in stations:
@@ -515,7 +530,8 @@ done; printf 'PORTS_END\n'
                     "node": display_names.get(router["ip"], router["name"]), "node_ip": router["ip"],
                     "ip": lease.get("ip") or neigh_ip.get(mac, ""),
                     "mac": mac, "hostname": lease.get("hostname", ""),
-                    "type": "Wi-Fi", "detail": " · ".join(details),
+                    "type": "Wi-Fi", "radio": wclient.get("band", ""),
+                    "detail": " · ".join(details),
                 }
 
         for router in self.routers:
@@ -529,7 +545,7 @@ done; printf 'PORTS_END\n'
                     "node": display_names.get(router["ip"], router["name"]), "node_ip": router["ip"],
                     "ip": lease.get("ip") or neigh_ip.get(mac, ""),
                     "mac": mac, "hostname": lease.get("hostname", ""),
-                    "type": "LAN", "detail": fdb.get("port", "br-lan"),
+                    "type": "LAN", "radio": "", "detail": fdb.get("port", "br-lan"),
                 }
 
         for router in self.routers:
@@ -543,7 +559,7 @@ done; printf 'PORTS_END\n'
                     "node": display_names.get(router["ip"], router["name"]), "node_ip": router["ip"],
                     "ip": lease.get("ip") or n.get("ip", ""), "mac": mac,
                     "hostname": lease.get("hostname", ""), "type": "Neurčené",
-                    "detail": f"ARP {n.get('state', '')}".strip(),
+                    "radio": "", "detail": f"ARP {n.get('state', '')}".strip(),
                 }
 
         main_name = display_names.get(self.routers[0]["ip"], self.routers[0]["name"]) if self.routers else "ROUTER"
@@ -554,7 +570,7 @@ done; printf 'PORTS_END\n'
             clients_by_mac[mac] = {
                 "node": main_name, "node_ip": main_ip, "ip": lease.get("ip", ""),
                 "mac": mac, "hostname": lease.get("hostname", ""),
-                "type": "DHCP", "detail": "lease",
+                "type": "DHCP", "radio": "", "detail": "lease",
             }
 
         clients = sorted(clients_by_mac.values(), key=lambda c: (c.get("node_ip", ""), c.get("ip", ""), c["mac"]))

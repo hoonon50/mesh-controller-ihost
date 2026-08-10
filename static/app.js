@@ -3,12 +3,14 @@ let lastStatus={nodes:[],links:[],clients:[]};
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 async function jfetch(url,opt={}){const r=await fetch(url,opt);if(!r.ok)throw new Error(await r.text());return r.json();}
-function metric(title,value){return `<div class="metric"><small>${title}</small><strong>${value}</strong></div>`}
+function metric(title,value,detail=''){return `<div class="metric"><small>${title}</small><strong>${value}</strong>${detail?`<em>${detail}</em>`:''}</div>`}
 function displayName(n){return n?.hostname||n?.name||n?.ip||'Router'}
 function renderStatus(s){
   lastStatus=s;
   const online=s.nodes.filter(n=>n.online).length;
-  $('#metrics').innerHTML=metric('ONLINE ROUTERY',`${online} / ${s.nodes.length||5}`)+metric('MESH SPOJE',s.links.length)+metric('KLIENTI',s.clients.length)+metric('ZÁLOHY','/data')+metric('OBNOVENO',s.updated?new Date(s.updated*1000).toLocaleTimeString('cs-CZ'):'—');
+  const wifi24=(s.clients||[]).filter(c=>c.radio==='2,4 GHz').length;
+  const wifi5=(s.clients||[]).filter(c=>c.radio==='5 GHz').length;
+  $('#metrics').innerHTML=metric('ONLINE ROUTERY',`${online} / ${s.nodes.length||5}`)+metric('MESH SPOJE',s.links.length)+metric('KLIENTI',s.clients.length,`5 GHz: ${wifi5} · 2,4 GHz: ${wifi24}`)+metric('ZÁLOHY','/data')+metric('OBNOVENO',s.updated?new Date(s.updated*1000).toLocaleTimeString('cs-CZ'):'—');
   renderTopology(s);renderPorts(s.nodes||[]);renderClients(s.clients||[]);renderLedTargets(s.nodes||[]);
 }
 function linkColor(dbm){if(dbm==null)return '#77818e';return dbm>=-60?'#31d17c':dbm>=-72?'#f0b84b':'#ff5d6c'}
@@ -88,11 +90,11 @@ function renderLedTargets(nodes){
   sel.innerHTML='<option value="all">Všechny routery</option>'+nodes.map(n=>`<option value="${esc(n.ip)}">${esc(displayName(n))} · ${esc(n.ip)}</option>`).join('');
   if([...sel.options].some(o=>o.value===current))sel.value=current;
 }
-function renderClients(clients){$('#clientsBody').innerHTML=clients.length?clients.map(c=>`<tr><td>${esc(c.node)}</td><td>${esc(c.hostname||'')}</td><td>${esc(c.ip)}</td><td>${esc(c.mac)}</td><td>${esc(c.type)}</td><td>${esc(c.detail||'')}</td></tr>`).join(''):`<tr><td colspan="6" style="color:var(--muted)">Žádní klienti nebyli nalezeni přes Wi-Fi, FDB, ARP ani DHCP.</td></tr>`}
+function renderClients(clients){$('#clientsBody').innerHTML=clients.length?clients.map(c=>`<tr><td>${esc(c.node)}</td><td>${esc(c.hostname||'')}</td><td>${esc(c.ip)}</td><td>${esc(c.mac)}</td><td>${esc(c.type)}</td><td>${esc(c.radio||'—')}</td><td>${esc(c.detail||'')}</td></tr>`).join(''):`<tr><td colspan="7" style="color:var(--muted)">Žádní klienti nebyli nalezeni.</td></tr>`}
 async function loadStatus(){try{renderStatus(await jfetch('/api/status'))}catch(e){console.error(e)}}
 function stateClass(s){return s==='HOTOVO'?'state-ok':s==='CHYBA'?'state-err':s==='PROBÍHÁ'?'state-run':'state-wait'}
 async function loadOperation(){try{const o=await jfetch('/api/operation');$('#opPercent').textContent=`${o.percent||0} %`;$('#progressBar').style.width=`${o.percent||0}%`;$('#opCurrent').textContent=o.current||'Připraveno';$('#opResult').textContent=o.result||'';const sec=o.elapsed||0;$('#opTime').textContent=`Čas: ${String(Math.floor(sec/60)).padStart(2,'0')}:${String(sec%60).padStart(2,'0')}`;$('#opNodes').innerHTML=Object.entries(o.nodes||{}).map(([ip,n])=>`<div class="op-node"><b>${esc(n.name)}</b><small>${esc(n.detail||ip)}</small><strong class="${stateClass(n.state)}">${esc(n.state)}</strong></div>`).join('');$('#opLog').textContent=(o.log||[]).join('\n');$('#opLog').scrollTop=$('#opLog').scrollHeight;$$('[data-action]').forEach(b=>b.disabled=!!o.running);if(!o.running&&o.finished){loadBackups();loadStatus();}}catch(e){console.error(e)}}
 async function runAction(name){const body=(name==='led_on'||name==='led_off')?{target:$('#ledTarget').value}:{};try{await jfetch(`/api/action/${name}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});loadOperation()}catch(e){console.error(e)}}
 async function loadBackups(){try{const sets=await jfetch('/api/backups'),box=$('#backupList');if(!sets.length){box.innerHTML='';return}box.innerHTML=sets.map(s=>`<div class="backup-set"><div class="backup-main"><strong>${esc(s.created)}</strong><span>${s.count}/5 souborů</span><a class="mini good-btn" href="/api/backups/${encodeURIComponent(s.id)}.zip">STÁHNOUT ZIP</a><button class="mini danger" onclick="deleteBackup('${esc(s.id)}')">SMAZAT</button></div><div class="backup-files">${s.files.map(f=>`<a href="/api/backups/${encodeURIComponent(s.id)}/${encodeURIComponent(f.name)}">${esc(f.name)} · ${(f.size/1024).toFixed(0)} kB</a>`).join('')}</div></div>`).join('');}catch(e){console.error(e)}}
-async function deleteBackup(id){if(!confirm('Opravdu smazat tuto sadu záloh?'))return;try{const r=await fetch(`/api/backups/${encodeURIComponent(id)}`,{method:'DELETE'}),data=await r.json();if(!r.ok||!data.ok)throw new Error('Sadu se nepodařilo smazat.');await loadBackups()}catch(e){alert(e.message||'Smazání zálohy se nepodařilo.')}}
+async function deleteBackup(id){try{const r=await fetch(`/api/backups/${encodeURIComponent(id)}`,{method:'DELETE'}),data=await r.json();if(!r.ok||!data.ok)throw new Error('Sadu se nepodařilo smazat.');await loadBackups()}catch(e){alert(e.message||'Smazání zálohy se nepodařilo.')}}
 $$('[data-action]').forEach(b=>b.addEventListener('click',()=>runAction(b.dataset.action)));$('#refreshBtn').addEventListener('click',async()=>{await fetch('/api/refresh',{method:'POST'});setTimeout(loadStatus,1800)});window.addEventListener('resize',()=>renderTopology(lastStatus));loadStatus();loadOperation();loadBackups();setInterval(loadOperation,1000);setInterval(loadStatus,30000);setInterval(loadBackups,15000);

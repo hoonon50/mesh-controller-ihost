@@ -1,18 +1,18 @@
-OpenWrt Mesh Controller PRO WEB v3.6.4 – SONOFF iHost ARMv7
+OpenWrt Mesh Controller PRO WEB v3.6.5 – SONOFF iHost ARMv7
 
-Změny v3.6.4:
+Změny v3.6.5:
 - nadpis ÚDRŽBA velkými písmeny
 - odstraněn pomocný text pod nadpisem ÚDRŽBA
 - STÁHNOUT ZIP má stejný rozměr a tvar jako SMAZAT, zelené pozadí a bílé písmo
 
-Změny v3.6.3:
+Změny v3.6.5:
 - PING MESH má stejný vzhled jako AKTUALIZACE HW.
 - AKTUALIZOVAT VŠECH 5 ROUTERŮ přejmenováno na AKTUALIZACE HW.
 - Panel průběhu používá název Aktualizace HW.
 
-OpenWrt Mesh Controller PRO WEB v3.6.2.2 – SONOFF iHost ARMv7
+OpenWrt Mesh Controller PRO WEB v3.6.5.2 – SONOFF iHost ARMv7
 
-Změny v3.6.2:
+Změny v3.6.5:
 - SAFE MESH není součástí webu.
 - Diagnostický log byl odstraněn; zůstal pouze živý log právě probíhající operace.
 - Aktualizace balíčků se spustí okamžitě po kliknutí, bez potvrzovacího dialogu.
@@ -37,13 +37,13 @@ Aktualizace přes GitHub:
 5. Vždy připoj stávající volume mesh-controller-data:/data a Network=host.
 
 
-v3.6.2 opravy:
+v3.6.5 opravy:
 - klienti: Wi-Fi station + bridge FDB + ARP + DHCP fallback
 - zálohy: bez SFTP, binární přenos přes SSH exec; ověření gzip/tar
 - topologie: bez MHz, automatické odsazení popisků od uzlů a od sebe
 
 
-v3.6.2.2 opravy:
+v3.6.5.2 opravy:
 - hostname se čte přes UCI nebo /proc/sys/kernel/hostname, ne přes chybějící BusyBox hostname příkaz
 - staré/legacy sady záloh lze rekurzivně smazat i když mají mezery nebo podadresáře
 - při chybě smazání web zobrazí upozornění

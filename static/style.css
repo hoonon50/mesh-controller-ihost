@@ -50,3 +50,8 @@
 }
 .backup-main a.mini.good-btn:hover{filter:brightness(1.12)}
 .backup-main button.mini.danger{color:#fff}
+
+
+/* v3.6.5 – klienti podle rádia + přesné zarovnání tlačítka ZIP */
+.metric em{display:block;color:var(--cyan);font-size:10px;font-style:normal;font-weight:750;margin-top:2px;white-space:nowrap}
+.backup-main a.mini.good-btn{text-align:center;align-items:center;justify-content:center}

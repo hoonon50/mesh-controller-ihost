@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OpenWrt Mesh Controller PRO v3.6.1</title>
-  <link rel="stylesheet" href="/static/style.css?v=3.6.1">
+  <title>OpenWRT MESH CONTROLLER PRO</title>
+  <link rel="stylesheet" href="/static/style.css?v=3.6.2">
 </head>
 <body>
 <header>
   <div>
-    <h1>OpenWrt Mesh Controller PRO <span>v3.6.1</span></h1>
-    <p>SONOFF iHost · 192.168.30.0/24</p>
+    <h1>OpenWRT MESH CONTROLLER PRO</h1>
+    <p>SONOFF iHost · DOCKER · {{ ihost_ip }}</p>
   </div>
   <button id="refreshBtn" class="secondary">Obnovit stav</button>
 </header>
@@ -21,7 +21,7 @@
   <section class="grid-main">
     <article class="card topology-card">
       <div class="card-head">
-        <div><h2>Živá topologie</h2><p>Názvy jsou skutečné hostname routerů. Spoje mají jen dBm a rychlost a jsou vedené v oddělených křivkách pro lepší čitelnost.</p></div>
+        <div><h2>TOPOLOGIE</h2></div>
         <div class="legend"><i class="good"></i> dobrý <i class="mid"></i> střední <i class="bad"></i> slabý</div>
       </div>
       <div id="topology" class="topology">
@@ -51,7 +51,7 @@
     <article class="card">
       <div class="card-head"><div><h2>Údržba</h2><p>Akce se spustí okamžitě a průběh je vidět nahoře.</p></div></div>
       <div class="actions maintenance-actions">
-        <button data-action="ping">PING 5 ROUTERŮ</button>
+        <button data-action="ping" class="ping-btn">PING MESH</button>
         <button data-action="update" class="warn">AKTUALIZOVAT VŠECH 5 ROUTERŮ</button>
         <button data-action="reboot" class="reboot-btn">REBOOT</button>
       </div>
@@ -66,12 +66,9 @@
     </article>
 
     <article class="card backups-card">
-      <div class="card-head">
-        <div><h2>Zálohy konfigurace</h2><p>Standardní OpenWrt sysupgrade .tar.gz, trvale uložené v /data.</p></div>
-        <button data-action="backup" class="good-btn">VYTVOŘIT NOVOU ZÁLOHU</button>
-      </div>
-      <div class="backup-name-map">
-        ROUTER.tar.gz → 192.168.30.1 · MESH1.tar.gz → .2 · MESH2.tar.gz → .3 · MESH3.tar.gz → .4 · MESH4.tar.gz → .5
+      <div class="card-head backup-head">
+        <div><h2>KONFIGURACE - ZÁLOHY</h2></div>
+        <button data-action="backup" class="backup-add-btn" title="Vytvořit novou zálohu" aria-label="Vytvořit novou zálohu">＋</button>
       </div>
       <div id="backupList" class="backup-list"></div>
     </article>
@@ -82,6 +79,6 @@
     <div class="table-wrap"><table><thead><tr><th>Router</th><th>Zařízení</th><th>IP</th><th>MAC</th><th>Typ</th><th>Detail</th></tr></thead><tbody id="clientsBody"></tbody></table></div>
   </section>
 </main>
-<script src="/static/app.js?v=3.6.1"></script>
+<script src="/static/app.js?v=3.6.2"></script>
 </body>
 </html>

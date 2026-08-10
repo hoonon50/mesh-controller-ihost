@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 import threading
 import time
 from pathlib import Path
@@ -9,9 +10,31 @@ from mesh_core import controller
 
 app = Flask(__name__)
 
+def get_ihost_ip() -> str:
+    """Vrátí IPv4 adresu iHostu použitou pro cestu do LAN s routery."""
+    targets = ["192.168.30.1", "1.1.1.1"]
+    for target in targets:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect((target, 80))
+            ip = sock.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                return ip
+        except OSError:
+            pass
+        finally:
+            sock.close()
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and not ip.startswith("127."):
+            return ip
+    except OSError:
+        pass
+    return "IP nezjištěna"
+
 @app.get("/")
 def index():
-    return render_template("index.html", routers=controller.routers)
+    return render_template("index.html", routers=controller.routers, ihost_ip=get_ihost_ip())
 
 @app.get("/api/status")
 def api_status():

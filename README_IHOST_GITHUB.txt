@@ -1,4 +1,11 @@
-OpenWrt Mesh Controller PRO WEB v3.6.5 – SONOFF iHost ARMv7
+OpenWrt Mesh Controller PRO WEB v3.6.6 – SONOFF iHost ARMv7
+
+Změny v3.6.6:
+- všude označení 2.4 GHz s tečkou
+- horní metriky: KLIENTI, 5 GHz a 2.4 GHz jako samostatné dlaždice se stejným stylem
+- nadpis LAN PORTY velkými písmeny
+- odstraněn popis pod LAN PORTY
+
 
 Změny v3.6.5:
 - nadpis ÚDRŽBA velkými písmeny

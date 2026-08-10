@@ -41,7 +41,7 @@ def normalize_radio_band(value: Any) -> str:
     if not raw:
         return ""
     if any(token in raw for token in ("2g", "2.4", "2,4", "11g", "11b")) or raw == "radio0":
-        return "2,4 GHz"
+        return "2.4 GHz"
     if any(token in raw for token in ("5g", "5ghz", "11a")) or raw == "radio1":
         return "5 GHz"
     if any(token in raw for token in ("6g", "6ghz")) or raw == "radio2":

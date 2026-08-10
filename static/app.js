@@ -8,9 +8,9 @@ function displayName(n){return n?.hostname||n?.name||n?.ip||'Router'}
 function renderStatus(s){
   lastStatus=s;
   const online=s.nodes.filter(n=>n.online).length;
-  const wifi24=(s.clients||[]).filter(c=>c.radio==='2,4 GHz').length;
+  const wifi24=(s.clients||[]).filter(c=>String(c.radio||'').replace(',', '.')==='2.4 GHz').length;
   const wifi5=(s.clients||[]).filter(c=>c.radio==='5 GHz').length;
-  $('#metrics').innerHTML=metric('ONLINE ROUTERY',`${online} / ${s.nodes.length||5}`)+metric('MESH SPOJE',s.links.length)+metric('KLIENTI',s.clients.length,`5 GHz: ${wifi5} · 2,4 GHz: ${wifi24}`)+metric('ZÁLOHY','/data')+metric('OBNOVENO',s.updated?new Date(s.updated*1000).toLocaleTimeString('cs-CZ'):'—');
+  $('#metrics').innerHTML=metric('ONLINE ROUTERY',`${online} / ${s.nodes.length||5}`)+metric('MESH SPOJE',s.links.length)+metric('KLIENTI',s.clients.length)+metric('5 GHz',wifi5)+metric('2.4 GHz',wifi24)+metric('ZÁLOHY','/data')+metric('OBNOVENO',s.updated?new Date(s.updated*1000).toLocaleTimeString('cs-CZ'):'—');
   renderTopology(s);renderPorts(s.nodes||[]);renderClients(s.clients||[]);renderLedTargets(s.nodes||[]);
 }
 function linkColor(dbm){if(dbm==null)return '#77818e';return dbm>=-60?'#31d17c':dbm>=-72?'#f0b84b':'#ff5d6c'}
@@ -90,7 +90,7 @@ function renderLedTargets(nodes){
   sel.innerHTML='<option value="all">Všechny routery</option>'+nodes.map(n=>`<option value="${esc(n.ip)}">${esc(displayName(n))} · ${esc(n.ip)}</option>`).join('');
   if([...sel.options].some(o=>o.value===current))sel.value=current;
 }
-function renderClients(clients){$('#clientsBody').innerHTML=clients.length?clients.map(c=>`<tr><td>${esc(c.node)}</td><td>${esc(c.hostname||'')}</td><td>${esc(c.ip)}</td><td>${esc(c.mac)}</td><td>${esc(c.type)}</td><td>${esc(c.radio||'—')}</td><td>${esc(c.detail||'')}</td></tr>`).join(''):`<tr><td colspan="7" style="color:var(--muted)">Žádní klienti nebyli nalezeni.</td></tr>`}
+function renderClients(clients){$('#clientsBody').innerHTML=clients.length?clients.map(c=>`<tr><td>${esc(c.node)}</td><td>${esc(c.hostname||'')}</td><td>${esc(c.ip)}</td><td>${esc(c.mac)}</td><td>${esc(c.type)}</td><td>${esc(String(c.radio||'—').replace(',', '.'))}</td><td>${esc(c.detail||'')}</td></tr>`).join(''):`<tr><td colspan="7" style="color:var(--muted)">Žádní klienti nebyli nalezeni.</td></tr>`}
 async function loadStatus(){try{renderStatus(await jfetch('/api/status'))}catch(e){console.error(e)}}
 function stateClass(s){return s==='HOTOVO'?'state-ok':s==='CHYBA'?'state-err':s==='PROBÍHÁ'?'state-run':'state-wait'}
 async function loadOperation(){try{const o=await jfetch('/api/operation');$('#opPercent').textContent=`${o.percent||0} %`;$('#progressBar').style.width=`${o.percent||0}%`;$('#opCurrent').textContent=o.current||'Připraveno';$('#opResult').textContent=o.result||'';const sec=o.elapsed||0;$('#opTime').textContent=`Čas: ${String(Math.floor(sec/60)).padStart(2,'0')}:${String(sec%60).padStart(2,'0')}`;$('#opNodes').innerHTML=Object.entries(o.nodes||{}).map(([ip,n])=>`<div class="op-node"><b>${esc(n.name)}</b><small>${esc(n.detail||ip)}</small><strong class="${stateClass(n.state)}">${esc(n.state)}</strong></div>`).join('');$('#opLog').textContent=(o.log||[]).join('\n');$('#opLog').scrollTop=$('#opLog').scrollHeight;$$('[data-action]').forEach(b=>b.disabled=!!o.running);if(!o.running&&o.finished){loadBackups();loadStatus();}}catch(e){console.error(e)}}

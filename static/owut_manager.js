@@ -32,45 +32,57 @@
     const backups = sectionByTitles(['KONFIGURACE - ZÁLOHY','KONFIGURACE – ZÁLOHY','ZÁLOHY KONFIGURACE']);
     if (!maintenance || !backups || maintenance === backups) return;
 
-    // Zálohy patří bezprostředně pod ÚDRŽBU.
-    if (maintenance.nextElementSibling !== backups) {
-      maintenance.insertAdjacentElement('afterend', backups);
+    // v3.7.3: ÚDRŽBA + KONFIGURACE/ZÁLOHY vedle sebe 50/50 a se stejnou výškou.
+    let row = document.getElementById('maintenanceBackupRow');
+    if (!row) {
+      row = document.createElement('div');
+      row.id = 'maintenanceBackupRow';
+      row.className = 'maintenance-backup-row';
+      maintenance.parentElement.insertBefore(row, maintenance);
     }
 
-    // Karty se nesmějí natahovat podle výšky sousední karty.
+    // Přesuneme obě existující karty do společného řádku. Jejich obsah ani funkce se nemění.
+    if (maintenance.parentElement !== row) row.appendChild(maintenance);
+    if (backups.parentElement !== row) row.appendChild(backups);
+
+    row.style.display = 'grid';
+    row.style.gridTemplateColumns = 'minmax(0,1fr) minmax(0,1fr)';
+    row.style.gap = '10px';
+    row.style.alignItems = 'stretch';
+    row.style.width = '100%';
+    row.style.boxSizing = 'border-box';
+    row.style.margin = '0 0 10px';
+
     for (const box of [maintenance, backups]) {
-      box.style.gridColumn = '1 / -1';
+      box.style.gridColumn = 'auto';
       box.style.width = '100%';
       box.style.maxWidth = '100%';
-      box.style.flex = '0 0 100%';
-      box.style.alignSelf = 'start';
-      box.style.height = 'auto';
+      box.style.flex = 'initial';
+      box.style.alignSelf = 'stretch';
+      box.style.height = '100%';
       box.style.minHeight = '0';
+      box.style.marginTop = '0';
+      box.style.marginBottom = '0';
       box.style.boxSizing = 'border-box';
     }
 
-    maintenance.style.marginBottom = '10px';
-    backups.style.marginTop = '0';
-
-    const parent = maintenance.parentElement;
-    if (parent && parent === backups.parentElement) {
-      const cs = getComputedStyle(parent);
-      parent.style.alignItems = 'start';
-      if (cs.display.includes('grid')) {
-        parent.style.gridTemplateColumns = 'minmax(0,1fr)';
-        parent.style.rowGap = '10px';
-      } else if (cs.display.includes('flex')) {
-        parent.style.flexDirection = 'column';
-        parent.style.alignItems = 'stretch';
-        parent.style.gap = '10px';
-      }
-    }
-
-    // Odstraní pouze prázdný prostor; tlačítka a ovládací prvky zůstávají.
+    // ÚDRŽBU ponecháme kompaktní, ale její karta se výškově dorovná se ZÁLOHAMI.
     maintenance.querySelectorAll('p,.sub,.subtitle,.section-subtitle,.muted').forEach(el => {
       const txt=(el.textContent||'').trim();
       if (txt && !el.querySelector('button,input,select')) el.style.display='none';
     });
+
+    // Na užším displeji se karty složí pod sebe, aby zůstaly čitelné.
+    const applyResponsive = () => {
+      row.style.gridTemplateColumns = window.innerWidth <= 760
+        ? 'minmax(0,1fr)'
+        : 'minmax(0,1fr) minmax(0,1fr)';
+    };
+    applyResponsive();
+    if (!row.dataset.resizeBound) {
+      row.dataset.resizeBound = '1';
+      window.addEventListener('resize', applyResponsive, {passive:true});
+    }
   }
 
   function makePanel() {
@@ -113,12 +125,12 @@
       </div>
     `;
 
-    // v3.7.2: ÚDRŽBA -> KONFIGURACE/ZÁLOHY -> OWUT.
-    // Zálohy tak zůstávají bezprostředně pod kompaktní údržbou.
+    // v3.7.3: ÚDRŽBA + ZÁLOHY jsou v jednom 50/50 řádku; OWUT je pod nimi.
     compactMaintenanceAndBackups();
+    const row = document.getElementById('maintenanceBackupRow');
     const backups = sectionByTitles(['KONFIGURACE - ZÁLOHY','KONFIGURACE – ZÁLOHY','ZÁLOHY KONFIGURACE']);
     const maintenance = sectionByTitles(['ÚDRŽBA']);
-    const anchor = backups || maintenance;
+    const anchor = row || backups || maintenance;
     if (anchor && anchor.parentElement) {
       anchor.insertAdjacentElement('afterend', panel);
     } else {

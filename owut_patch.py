@@ -3,7 +3,7 @@ from pathlib import Path
 root = Path('/app')
 app_py = root / 'app.py'
 text = app_py.read_text(encoding='utf-8')
-hook = '''\n# v3.7.2 – kompaktní ÚDRŽBA + zálohy pod ní + OWUT\nfrom owut_manager import register_owut_manager\nregister_owut_manager(app, controller)\n'''
+hook = '''\n# v3.7.3 – ÚDRŽBA + ZÁLOHY vedle sebe 50/50\nfrom owut_manager import register_owut_manager\nregister_owut_manager(app, controller)\n'''
 if 'register_owut_manager(app, controller)' not in text:
     marker = '\nif __name__ == "__main__":'
     marker2 = "\nif __name__ == '__main__':"
@@ -32,7 +32,7 @@ style = '''<style id="owut-manager-style">
 @media(max-width:900px){.owut-status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.owut-form{grid-template-columns:1fr 1fr}}
 @media(max-width:560px){.owut-status-grid,.owut-form{grid-template-columns:1fr}.owut-btn{width:100%}}
 </style>'''
-script = '<script src="/static/owut_manager.js?v=3.7.2"></script>'
+script = '<script src="/static/owut_manager.js?v=3.7.3"></script>'
 if 'id="owut-manager-style"' not in html:
     html = html.replace('</head>', f'  {style}\n</head>') if '</head>' in html else style + '\n' + html
 if '/static/owut_manager.js' not in html:

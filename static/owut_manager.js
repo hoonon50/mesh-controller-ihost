@@ -1,10 +1,11 @@
 (() => {
   'use strict';
 
-  if (window.__OWUT_MANAGER_383__) return;
-  window.__OWUT_MANAGER_383__ = true;
+  if (window.__OWUT_MANAGER_386__) return;
+  window.__OWUT_MANAGER_386__ = true;
 
-  const WEEKDAYS = ['Pondělí','Úterý','Středa','Čtvrtek','Pátek','Sobota','Neděle'];
+  const SCHEDULE_MODES = [{value:'daily',label:'Každý den'},{value:'weekly',label:'Vybraný den'}];
+  const SCHEDULE_DAYS = [{value:0,label:'Pondělí'},{value:1,label:'Úterý'},{value:2,label:'Středa'},{value:3,label:'Čtvrtek'},{value:4,label:'Pátek'},{value:5,label:'Sobota'},{value:6,label:'Neděle'}];
 
   async function api(url, options={}) {
     const r = await fetch(url, {
@@ -64,7 +65,8 @@
       <div class="owut-title owut-auto-title">AUTOMATICKÁ AKTUALIZACE + GMAIL REPORT</div>
       <div class="owut-form">
         <label><span>Automatika</span><input id="owutAuto" type="checkbox"></label>
-        <label><span>Den</span><select id="owutWeekday">${WEEKDAYS.map((x,i)=>`<option value="${i}">${x}</option>`).join('')}</select></label>
+        <label><span>Frekvence</span><select id="owutScheduleMode">${SCHEDULE_MODES.map(x=>`<option value="${x.value}">${x.label}</option>`).join('')}</select></label>
+        <label id="owutWeekdayLabel"><span>Den</span><select id="owutWeekday">${SCHEDULE_DAYS.map(x=>`<option value="${x.value}">${x.label}</option>`).join('')}</select></label>
         <label><span>Čas</span><input id="owutTime" type="time" value="03:00"></label>
         <label><span>Gmail odesílatel</span><input id="owutFrom" type="email" placeholder="vas@gmail.com"></label>
         <label><span>Odeslat report na</span><input id="owutTo" type="email" placeholder="prijemce@gmail.com"></label>
@@ -93,6 +95,7 @@
     document.getElementById('owutOverlayBtn').onclick = overlaySetup;
     document.getElementById('owutSaveBtn').onclick = saveSettings;
     document.getElementById('owutMailBtn').onclick = testEmail;
+    document.getElementById('owutScheduleMode').onchange = syncScheduleUi;
     return {manual, auto};
   }
 
@@ -184,11 +187,20 @@
     await startOp('/api/owut/overlay-setup', {confirm:'SMAZAT USB'});
   }
 
+  function syncScheduleUi() {
+    const mode = document.getElementById('owutScheduleMode')?.value || 'weekly';
+    const label = document.getElementById('owutWeekdayLabel');
+    if (label) label.style.display = mode === 'daily' ? 'none' : '';
+  }
+
   async function loadSettings() {
     try {
       const s = await api('/api/owut/settings');
       document.getElementById('owutAuto').checked = !!s.auto_enabled;
-      document.getElementById('owutWeekday').value = String(s.weekday ?? 6);
+      const scheduleMode = (s.schedule_mode === 'daily' || Number(s.weekday) === -1) ? 'daily' : 'weekly';
+      document.getElementById('owutScheduleMode').value = scheduleMode;
+      document.getElementById('owutWeekday').value = String(Number(s.weekday) >= 0 ? s.weekday : 6);
+      syncScheduleUi();
       document.getElementById('owutTime').value = s.time || '03:00';
       document.getElementById('owutFrom').value = s.gmail_from || '';
       document.getElementById('owutTo').value = s.gmail_to || '';
@@ -202,7 +214,8 @@
   async function saveSettings() {
     const payload = {
       auto_enabled: document.getElementById('owutAuto').checked,
-      weekday: Number(document.getElementById('owutWeekday').value),
+      schedule_mode: document.getElementById('owutScheduleMode').value,
+      weekday: document.getElementById('owutScheduleMode').value === 'daily' ? -1 : Number(document.getElementById('owutWeekday').value),
       time: document.getElementById('owutTime').value,
       gmail_from: document.getElementById('owutFrom').value.trim(),
       gmail_to: document.getElementById('owutTo').value.trim(),

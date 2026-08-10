@@ -41,7 +41,8 @@ EXTROOT_ADD = "block-mount,kmod-fs-ext4,kmod-usb-storage,kmod-usb-storage-uas"
 
 DEFAULT_SETTINGS = {
     "auto_enabled": False,
-    "weekday": 6,              # -1 = každý den, 0 = pondělí ... 6 = neděle
+    "schedule_mode": "weekly", # daily = každý den, weekly = vybraný den
+    "weekday": 6,              # 0 = pondělí ... 6 = neděle; -1 = zpětná kompatibilita pro každý den
     "time": "03:00",
     "gmail_from": "",
     "gmail_to": "",
@@ -94,6 +95,19 @@ def _save_settings(data: Dict[str, Any]) -> None:
 
 def _public_settings(data: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(data)
+    # Zpětná kompatibilita: staré nastavení používalo weekday=-1 pro každý den.
+    mode = str(out.get("schedule_mode") or "").strip().lower()
+    try:
+        wd = int(out.get("weekday", 6))
+    except Exception:
+        wd = 6
+    if mode not in {"daily", "weekly"}:
+        mode = "daily" if wd == -1 else "weekly"
+    out["schedule_mode"] = mode
+    if mode == "daily":
+        out["weekday"] = -1
+    elif not 0 <= wd <= 6:
+        out["weekday"] = 6
     out["gmail_app_password"] = ""  # heslo nikdy neposíláme zpět do prohlížeče
     out["gmail_password_saved"] = bool(data.get("gmail_app_password"))
     return out
@@ -769,6 +783,60 @@ def _build_test_email(controller) -> Tuple[str, str]:
     return text_body, html_body
 
 
+def _deliver_upgrade_report_safe(
+    controller,
+    automatic: bool,
+    overall_ok: bool,
+    rows: List[Dict[str, Any]],
+    backup_id: str,
+    extra: str,
+) -> Tuple[bool, str]:
+    """Vždy se pokusí vytvořit a doručit report.
+
+    Chyba měření teplot nebo HTML renderu nesmí zabránit odeslání e-mailu.
+    Pokud selže grafický report, vytvoří se minimální textová varianta.
+    """
+    report_kind = "AUTOMATICKÝ OWUT SYSUPGRADE" if automatic else "RUČNÍ OWUT SYSUPGRADE"
+    subject = f"{'OK' if overall_ok else 'CHYBA'} – OpenWRT MESH OWUT aktualizace"
+    try:
+        _op_log("Měřím aktuální CPU teploty pro report…")
+        temperatures = _collect_temperatures(controller)
+    except Exception as exc:
+        temperatures = {"routers": {}, "ihost": None}
+        _op_log(f"Teploty pro report se nepodařilo načíst: {exc}")
+
+    try:
+        report_text = _build_report_text(report_kind, overall_ok, rows, backup_id, extra, temperatures)
+    except Exception as exc:
+        report_text = (
+            "OpenWRT MESH CONTROLLER PRO\n\n"
+            f"Operace: {report_kind}\n"
+            f"Datum: {_now_text()}\n"
+            f"Výsledek: {'OK' if overall_ok else 'CHYBA / NEDOKONČENO'}\n"
+            f"Detail: {extra or 'Bez detailu'}\n\n"
+            f"Poznámka: plný textový report se nepodařilo vytvořit ({exc})."
+        )
+        _op_log(f"Textový report byl vytvořen v nouzovém režimu: {exc}")
+
+    try:
+        report_html = _build_report_html(report_kind, overall_ok, rows, backup_id, extra, temperatures)
+    except Exception as exc:
+        report_html = ""
+        _op_log(f"HTML report se nepodařilo vytvořit, použiji TEXT: {exc}")
+
+    try:
+        ok, detail = _send_report_or_queue(subject, report_text, report_html)
+        return ok, detail
+    except Exception as exc:
+        # Poslední záchrana: report uložit do pending souboru, aby ho retry loop
+        # mohl zkusit odeslat po obnovení konektivity.
+        try:
+            _save_pending_mail(subject, report_text, report_html)
+            return False, f"Odeslání reportu selhalo ({exc}); report byl uložen do fronty."
+        except Exception as queue_exc:
+            return False, f"Odeslání reportu selhalo ({exc}); uložení do fronty selhalo ({queue_exc})."
+
+
 def _upgrade_worker(controller, automatic: bool = False) -> None:
     if _snapshot_operation().get("running"):
         return
@@ -892,17 +960,20 @@ def _upgrade_worker(controller, automatic: bool = False) -> None:
         _op_log(f"CHYBA: {exc}")
         _op_finish(False, f"OWUT aktualizace nedokončena: {exc}", {"ok": False, "rows": rows, "backup_id": backup_id})
     finally:
-        report_kind = "AUTOMATICKÝ OWUT SYSUPGRADE" if automatic else "RUČNÍ OWUT SYSUPGRADE"
-        _op_log("Měřím aktuální CPU teploty pro report…")
-        temperatures = _collect_temperatures(controller)
-        report_text = _build_report_text(report_kind, overall_ok, rows, backup_id, extra, temperatures)
-        report_html = _build_report_html(report_kind, overall_ok, rows, backup_id, extra, temperatures)
-        mail_ok, mail_detail = _send_report_or_queue(
-            f"{'OK' if overall_ok else 'CHYBA'} – OpenWRT MESH OWUT aktualizace",
-            report_text,
-            report_html,
+        mail_ok, mail_detail = _deliver_upgrade_report_safe(
+            controller, automatic, overall_ok, rows, backup_id, extra
         )
         _op_log(f"Gmail report: {'odeslán' if mail_ok else 'neodeslán'} – {mail_detail}")
+        if automatic:
+            try:
+                settings = _load_settings()
+                settings["last_auto_result"] = "ok" if overall_ok else "error"
+                settings["last_auto_mail_ok"] = bool(mail_ok)
+                settings["last_auto_mail_detail"] = str(mail_detail)[:500]
+                settings["last_auto_finished"] = _now_text()
+                _save_settings(settings)
+            except Exception:
+                pass
 
 
 def _check_worker(controller) -> None:
@@ -1041,13 +1112,21 @@ def _scheduler_loop(controller) -> None:
                     hh, mm = [int(x) for x in str(settings.get("time", "03:00")).split(":", 1)]
                 except Exception:
                     hh, mm = 3, 0
-                weekday = int(settings.get("weekday", 6))
+                try:
+                    weekday = int(settings.get("weekday", 6))
+                except Exception:
+                    weekday = 6
+                mode = str(settings.get("schedule_mode") or "").strip().lower()
+                if mode not in {"daily", "weekly"}:
+                    mode = "daily" if weekday == -1 else "weekly"
                 today = now.strftime("%Y-%m-%d")
-                due = (weekday == -1 or now.weekday() == weekday) and now.hour == hh and now.minute == mm
+                day_matches = True if mode == "daily" else now.weekday() == weekday
+                due = day_matches and now.hour == hh and now.minute == mm
                 if due and settings.get("last_auto_date") != today and not _snapshot_operation().get("running"):
                     settings["last_auto_date"] = today
+                    settings["last_auto_started"] = _now_text()
                     _save_settings(settings)
-                    threading.Thread(target=_upgrade_worker, args=(controller, True), daemon=True).start()
+                    threading.Thread(target=_upgrade_worker, args=(controller, True), daemon=True, name="owut-auto-upgrade").start()
         except Exception:
             pass
         time.sleep(30)
@@ -1067,11 +1146,18 @@ def register_owut_manager(app, controller) -> None:
         incoming = request.get_json(silent=True) or {}
         data = _load_settings()
         data["auto_enabled"] = bool(incoming.get("auto_enabled", False))
+        mode = str(incoming.get("schedule_mode", data.get("schedule_mode", "weekly"))).strip().lower()
+        if mode not in {"daily", "weekly"}:
+            mode = "weekly"
+        data["schedule_mode"] = mode
         try:
             wd = int(incoming.get("weekday", data.get("weekday", 6)))
-            data["weekday"] = wd if -1 <= wd <= 6 else 6
         except Exception:
-            data["weekday"] = 6
+            wd = 6
+        if mode == "daily":
+            data["weekday"] = -1
+        else:
+            data["weekday"] = wd if 0 <= wd <= 6 else 6
         tm = str(incoming.get("time", data.get("time", "03:00"))).strip()
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", tm):
             return jsonify({"ok": False, "error": "Čas musí být HH:MM."}), 400

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import re
 import shlex
@@ -508,6 +509,66 @@ done; printf 'PORTS_END\n'
             for n in data.get("neighbors", []):
                 neigh_ip.setdefault(n["mac"], n["ip"])
 
+        # Živost klientů: DHCP lease sám o sobě NENÍ důkaz, že zařízení právě běží.
+        # Wi-Fi klient je živý už tím, že je asociovaný v `iw station dump`.
+        # U kabelových/ARP/DHCP kandidátů provedeme rychlý paralelní ping z hlavního
+        # routeru. Tím se z horního počtu i tabulky odstraní vypnutá zařízení, jejichž
+        # DHCP lease ještě nevypršel. Mesh MAC adresy jsou nadále výslovně vyloučené.
+        live_ips: set[str] = set()
+        candidate_ips: set[str] = set()
+        router_ips = {str(r.get("ip", "")) for r in self.routers}
+
+        def _valid_client_ip(value: str) -> bool:
+            try:
+                addr = ipaddress.ip_address(str(value).strip())
+                net = ipaddress.ip_network("192.168.30.0/24")
+                return addr.version == 4 and addr in net and str(addr) not in router_ips
+            except ValueError:
+                return False
+
+        for lease in lease_map.values():
+            lip = str(lease.get("ip", "")).strip()
+            if _valid_client_ip(lip):
+                candidate_ips.add(lip)
+        for nip in neigh_ip.values():
+            nip = str(nip).strip()
+            if _valid_client_ip(nip):
+                candidate_ips.add(nip)
+
+        if candidate_ips and self.routers:
+            probe_client = None
+            try:
+                probe_client = self.ssh_client(self.routers[0]["ip"], 5)
+                # Spouštíme po malých dávkách, aby ani větší síť nevytvořila stovky
+                # paralelních procesů na routeru. Pokud je dostupný arping, ověřujeme přímo ARP odpověď (funguje i když klient
+                # blokuje ICMP). Jinak použijeme BusyBox ping. Výstupem jsou jen IP,
+                # které v tomto refreshi skutečně odpověděly.
+                sorted_ips = sorted(candidate_ips, key=lambda x: tuple(int(n) for n in x.split(".")))
+                for start in range(0, len(sorted_ips), 24):
+                    batch = sorted_ips[start:start + 24]
+                    lines = []
+                    for addr in batch:
+                        q = shlex.quote(addr)
+                        lines.append(
+                            f'(if command -v arping >/dev/null 2>&1; then '
+                            f'arping -q -c 1 -w 1 -I br-lan {q} >/dev/null 2>&1; '
+                            f'else ping -c 1 -W 1 {q} >/dev/null 2>&1; fi; '
+                            f'[ $? -eq 0 ] && echo {q}) &'
+                        )
+                    lines.append('wait')
+                    out, _err, _code = self.command(probe_client, "\n".join(lines), 8)
+                    for line in out.splitlines():
+                        ip_value = line.strip()
+                        if _valid_client_ip(ip_value):
+                            live_ips.add(ip_value)
+            except Exception:
+                # Když aktivní ověření selže, nesmažeme Wi-Fi klienty. U LAN použijeme
+                # čerstvý FDB záznam jako fallback, ale DHCP-only duchy nepřidáme.
+                live_ips = set()
+            finally:
+                if probe_client:
+                    probe_client.close()
+
         display_names = {
             state["ip"]: (state.get("hostname") or state.get("name") or state["ip"])
             for state in node_states
@@ -541,9 +602,15 @@ done; printf 'PORTS_END\n'
                 if mac in clients_by_mac or mac in local_macs or mac in mesh_macs:
                     continue
                 lease = lease_map.get(mac, {})
+                client_ip = str(lease.get("ip") or neigh_ip.get(mac, "")).strip()
+                # FDB je čerstvý důkaz provozu na fyzickém portu. Pokud známe IP a
+                # aktivní ping odpověděl, je klient jednoznačně živý. Bez IP ponecháme
+                # FDB-only zařízení jako živé, protože bylo právě naučené bridge.
+                if client_ip and live_ips and client_ip not in live_ips:
+                    continue
                 clients_by_mac[mac] = {
                     "node": display_names.get(router["ip"], router["name"]), "node_ip": router["ip"],
-                    "ip": lease.get("ip") or neigh_ip.get(mac, ""),
+                    "ip": client_ip,
                     "mac": mac, "hostname": lease.get("hostname", ""),
                     "type": "LAN", "radio": "", "detail": fdb.get("port", "br-lan"),
                 }
@@ -555,9 +622,17 @@ done; printf 'PORTS_END\n'
                 if mac in clients_by_mac or mac in local_macs or mac in mesh_macs:
                     continue
                 lease = lease_map.get(mac, {})
+                client_ip = str(lease.get("ip") or n.get("ip", "")).strip()
+                nstate = str(n.get("state", "")).upper()
+                if live_ips:
+                    if client_ip not in live_ips:
+                        continue
+                elif nstate not in {"REACHABLE", "DELAY", "PROBE"}:
+                    # Bez aktivního pingu nepočítáme STALE ARP záznamy jako živé.
+                    continue
                 clients_by_mac[mac] = {
                     "node": display_names.get(router["ip"], router["name"]), "node_ip": router["ip"],
-                    "ip": lease.get("ip") or n.get("ip", ""), "mac": mac,
+                    "ip": client_ip, "mac": mac,
                     "hostname": lease.get("hostname", ""), "type": "Neurčené",
                     "radio": "", "detail": f"ARP {n.get('state', '')}".strip(),
                 }
@@ -567,10 +642,15 @@ done; printf 'PORTS_END\n'
         for mac, lease in lease_map.items():
             if mac in clients_by_mac or mac in local_macs or mac in mesh_macs:
                 continue
+            client_ip = str(lease.get("ip", "")).strip()
+            # DHCP lease může existovat hodiny/dny po vypnutí zařízení. Proto DHCP-only
+            # klient zobrazíme jen tehdy, když v tomto refreshi skutečně odpověděl.
+            if not client_ip or client_ip not in live_ips:
+                continue
             clients_by_mac[mac] = {
-                "node": main_name, "node_ip": main_ip, "ip": lease.get("ip", ""),
+                "node": main_name, "node_ip": main_ip, "ip": client_ip,
                 "mac": mac, "hostname": lease.get("hostname", ""),
-                "type": "DHCP", "radio": "", "detail": "lease",
+                "type": "DHCP", "radio": "", "detail": "živý",
             }
 
         clients = sorted(clients_by_mac.values(), key=lambda c: (c.get("node_ip", ""), c.get("ip", ""), c["mac"]))

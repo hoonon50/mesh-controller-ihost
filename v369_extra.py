@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import time
 from flask import jsonify
 
 
@@ -85,8 +87,18 @@ def register_v369(app, controller):
         return
     app._v369_registered = True
 
+    # CPU + uptime stačí číst jednou za 10 minut. Hodnoty držíme v paměti,
+    # takže opakované HTTP požadavky nespouštějí nové SSH dotazy na routery.
+    health_cache = {"at": 0.0, "routers": []}
+    health_lock = threading.Lock()
+    health_ttl = 600.0
+
     @app.get("/api/v369/router-health")
     def v369_router_health():
+        now = time.monotonic()
+        with health_lock:
+            if health_cache["routers"] and (now - health_cache["at"] < health_ttl):
+                return jsonify({"routers": health_cache["routers"], "cached": True})
         try:
             if hasattr(controller, "runtime_routers"):
                 routers = list(controller.runtime_routers())
@@ -105,4 +117,7 @@ def register_v369(app, controller):
                     pass
 
         rows.sort(key=lambda x: tuple(int(p) if p.isdigit() else 999 for p in x.get("ip", "").split(".")))
-        return jsonify({"routers": rows})
+        with health_lock:
+            health_cache["at"] = time.monotonic()
+            health_cache["routers"] = rows
+        return jsonify({"routers": rows, "cached": False})

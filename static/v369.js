@@ -58,9 +58,10 @@
         : '—';
       const uptime = item && item.uptime ? esc(item.uptime) : '—';
 
-      box.innerHTML =
+      const wanted =
         `<div><strong style="color:#92929e">CPU</strong> ${temp}</div>` +
         `<div><strong style="color:#92929e">UPTIME</strong> ${uptime}</div>`;
+      if (box.innerHTML !== wanted) box.innerHTML = wanted;
     }
   }
 
@@ -84,9 +85,24 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     loadHealth();
-    setInterval(loadHealth, 30000);
+    setInterval(loadHealth, 600000);
 
-    const observer = new MutationObserver(scheduleInject);
+    const observer = new MutationObserver((mutations) => {
+      // Neodpovídej na vlastní změny CPU/UPTIME boxu – jinak vzniká zbytečná
+      // smyčka překreslování, která může působit jako blikání dlaždic.
+      const externalChange = mutations.some(m => {
+        const target = m.target && m.target.nodeType === 1 ? m.target : null;
+        if (target && target.closest && target.closest('.v369-health')) return false;
+        return Array.from(m.addedNodes || []).some(n => {
+          if (!n || n.nodeType !== 1) return true;
+          return !(n.matches?.('.v369-health') || n.closest?.('.v369-health'));
+        }) || Array.from(m.removedNodes || []).some(n => {
+          if (!n || n.nodeType !== 1) return true;
+          return !(n.matches?.('.v369-health') || n.closest?.('.v369-health'));
+        });
+      });
+      if (externalChange) scheduleInject();
+    });
     observer.observe(document.body, {subtree: true, childList: true});
   });
 })();

@@ -27,3 +27,26 @@
 .backup-head{align-items:center}
 .backup-add-btn{width:38px;height:34px;padding:0;display:grid;place-items:center;background:#236846;border-color:#338b60;color:#fff;font-size:22px;line-height:1;font-weight:800}
 .backup-add-btn:hover{background:#2c8058}
+
+/* v3.6.4 – sjednocené akce záloh */
+.backup-main .mini{
+  width:96px;
+  height:30px;
+  padding:0 8px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border:1px solid var(--border);
+  border-radius:8px;
+  font-size:11px;
+  font-weight:700;
+  line-height:1;
+  text-decoration:none;
+  box-sizing:border-box;
+}
+.backup-main a.mini.good-btn{
+  background:#236846;
+  color:#fff;
+}
+.backup-main a.mini.good-btn:hover{filter:brightness(1.12)}
+.backup-main button.mini.danger{color:#fff}

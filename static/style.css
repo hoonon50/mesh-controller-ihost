@@ -23,9 +23,7 @@
 @media(max-width:760px){.topology{height:620px}.link-label{font-size:11px;min-width:105px;padding:5px 7px}.node{width:132px}.maintenance-actions{grid-template-columns:1fr}.maintenance-actions .reboot-btn{grid-column:auto}}
 
 
-/* v3.6.2 – zjednodušené nadpisy a ovládání */
-.ping-btn{background:#1f5e7a;border-color:#2f8fb5;color:#fff;box-shadow:inset 0 3px 0 var(--cyan)}
-.ping-btn:hover{background:#287596}
+/* v3.6.3 – sjednocená tlačítka PING MESH / AKTUALIZACE HW */
 .backup-head{align-items:center}
 .backup-add-btn{width:38px;height:34px;padding:0;display:grid;place-items:center;background:#236846;border-color:#338b60;color:#fff;font-size:22px;line-height:1;font-weight:800}
 .backup-add-btn:hover{background:#2c8058}

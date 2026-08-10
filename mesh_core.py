@@ -640,7 +640,7 @@ echo UPDATE_OK
                 return False, (err or out or f"exit {code}")[-350:]
             finally:
                 c.close()
-        threading.Thread(target=self._run_per_router, args=("Aktualizace všech routerů", worker, "Aktualizace"), daemon=True).start()
+        threading.Thread(target=self._run_per_router, args=("Aktualizace HW", worker, "Aktualizace HW"), daemon=True).start()
         return True
 
     @staticmethod

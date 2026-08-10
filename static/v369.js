@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  // Poslední známé hodnoty držíme v JS paměti. Běžný 30s refresh topologie
+  // Poslední známé hodnoty držíme v JS paměti. Běžný 5s refresh topologie
   // je nesmí shodit – CPU/UPTIME se fyzicky načítá jen jednou za 10 minut.
   const ROUTER_IPS = [
     '192.168.30.1',
@@ -118,7 +118,7 @@
     // Skutečný health refresh: 10 minut.
     setInterval(loadHealth, 600000);
 
-    // Hlavní aplikace překresluje topologii častěji. MutationObserver běží
+    // Hlavní aplikace překresluje topologii každých 5 sekund. MutationObserver běží
     // ještě před vykreslením dalšího frame, proto hodnoty vložíme PŘÍMO,
     // bez předchozí 120ms prodlevy a bez viditelného bliknutí.
     const observer = new MutationObserver((mutations) => {

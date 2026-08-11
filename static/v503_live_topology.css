@@ -1,13 +1,15 @@
-/* OpenWRT MESH CONTROLLER PRO v5.0.3 – skutečně živá topologie */
+/* OpenWRT MESH CONTROLLER PRO v5.0.4 – živá topologie, bez duplicit CPU/UPTIME */
 .v503-topology-host { position: relative !important; }
 
 .v503-live-stage {
   position: absolute;
-  z-index: 30;
+  z-index: 10000;
+  isolation: isolate;
   overflow: hidden;
   border: 1px solid rgba(255,255,255,.10);
   border-radius: 9px;
   background: #1c2026;
+  opacity: 1;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.025);
 }
 
@@ -64,8 +66,8 @@
   transform: translate(-50%, -50%);
   box-sizing: border-box;
   width: 142px;
-  min-height: 112px;
-  padding: 10px 11px 9px;
+  min-height: 98px;
+  padding: 9px 11px 8px;
   border: 2px solid #29d98f;
   border-radius: 10px;
   background: rgba(32,38,45,.98);
@@ -77,11 +79,11 @@
 .v503-node.offline { border-color: #ff5267; opacity: .82; }
 .v503-node.stale { border-color: #f1b83f; }
 .v503-node-name { font-size: 13px; font-weight: 850; line-height: 1.05; }
-.v503-node-ip { margin-top: 5px; font-size: 9px; color: #8d96a3; }
-.v503-node-state { margin-top: 7px; font-size: 9px; font-weight: 850; color: #29d98f; }
+.v503-node-ip { margin-top: 4px; font-size: 9px; color: #8d96a3; }
+.v503-node-state { margin-top: 5px; font-size: 9px; font-weight: 850; color: #29d98f; }
 .v503-node.offline .v503-node-state { color: #ff5267; }
-.v503-node-rule { height: 1px; margin: 7px 0 6px; background: rgba(255,255,255,.09); }
-.v503-node-health { display: grid; gap: 4px; font-size: 8.5px; color: #aeb5bf; line-height: 1; }
+.v503-node-rule { height: 1px; margin: 5px 0 5px; background: rgba(255,255,255,.09); }
+.v503-node-health { display: grid; gap: 3px; font-size: 8.5px; color: #aeb5bf; line-height: 1; }
 .v503-node-health b { color: #dbe0e5; font-weight: 760; }
 
 .v503-live-status {
@@ -101,7 +103,15 @@
 .v503-live-status.error { color: #ff7180; }
 
 @media (max-width: 1100px) {
-  .v503-node { width: 132px; min-height: 106px; padding: 9px; }
+  .v503-node { width: 132px; min-height: 94px; padding: 8px 9px; }
   .v503-node-name { font-size: 12px; }
   .v503-link-label { font-size: 9px; padding: 5px 7px; min-width: 76px; }
+}
+
+
+/* Staré karty topologie jsou pouze podklad původního rendereru.
+   v5.0.4 je schová, aby nebyly vidět duplicitní CPU/UPTIME hodnoty. */
+.v504-legacy-topology-node {
+  visibility: hidden !important;
+  pointer-events: none !important;
 }

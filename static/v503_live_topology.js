@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__MESH_V503_LIVE_TOPOLOGY__) return;
-  window.__MESH_V503_LIVE_TOPOLOGY__ = true;
+  if (window.__MESH_V504_LIVE_TOPOLOGY__) return;
+  window.__MESH_V504_LIVE_TOPOLOGY__ = true;
 
   const API = '/api/v503/live-topology';
   const REFRESH_MS = 5000;
@@ -81,6 +81,27 @@
     nodes.set(ip, el);
   }
 
+  function suppressLegacyTopology() {
+    if (!panel || !stage) return;
+    // Původní renderer může mít vlastní absolutně pozicované uzly nad novou
+    // vrstvou. Zvedneme live stage nad celý starý graf a staré karty s IP
+    // routerů výslovně označíme jako legacy, aby se jejich CPU/UPTIME
+    // nemohly překrývat s živými hodnotami v5.0.4.
+    const routerIps = new Set(Object.keys(NODE_POS));
+    for (const el of Array.from(panel.querySelectorAll('div,section,article'))) {
+      if (el === stage || stage.contains(el)) continue;
+      const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      let ipHits = 0;
+      for (const ip of routerIps) if (text.includes(ip)) ipHits += 1;
+      if (ipHits !== 1) continue;
+      if (!/CPU/i.test(text) || !/UPTIME/i.test(text)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 90 || r.width > 260 || r.height < 60 || r.height > 190) continue;
+      el.classList.add('v504-legacy-topology-node');
+    }
+  }
+
   function mount() {
     if (stage && document.body.contains(stage)) return true;
     const found = findTopologyPanel();
@@ -91,7 +112,7 @@
     stage = document.createElement('div');
     stage.className = 'v503-live-stage';
     stage.id = 'v503LiveTopology';
-    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v5.0.3 · čekám…</div>';
+    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v5.0.4 · čekám…</div>';
     panel.appendChild(stage);
     svg = stage.querySelector('.v503-live-svg');
     status = stage.querySelector('.v503-live-status');
@@ -102,6 +123,7 @@
     buildNode('192.168.30.1', 'ROUTER');
     buildNode('192.168.30.5', 'MESH4');
     buildNode('192.168.30.4', 'MESH3');
+    suppressLegacyTopology();
 
     if ('ResizeObserver' in window) {
       resizeObserver = new ResizeObserver(() => {
@@ -247,8 +269,8 @@
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v5.0.3 · ${payload.clock || ''} · #${payload.sequence || 0}`
-        : `LIVE v5.0.3 · čekám na routery`;
+        ? `LIVE v5.0.4 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        : `LIVE v5.0.4 · čekám na routery`;
       status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
     }
   }
@@ -263,7 +285,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v5.0.3 · API nedostupné';
+        status.textContent = 'LIVE v5.0.4 · API nedostupné';
         status.title = String(err);
       }
     } finally {

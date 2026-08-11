@@ -28,8 +28,8 @@ RUN mkdir -p /data/backups \
     && if [ -f /app/v389_wan_usage_patch.py ]; then python3 /app/v389_wan_usage_patch.py; fi \
     && if [ -f /app/v3812_wan_history_patch.py ]; then python3 /app/v3812_wan_history_patch.py; fi \
     && python3 /app/v500_patch.py \
-    && python3 /app/v501_refresh_tune.py \
-    && python3 -m py_compile /app/app.py /app/mesh_operation_manager.py /app/v500_patch.py /app/v501_refresh_tune.py \
+    && python3 /app/v502_live_refresh_patch.py \
+    && python3 -m py_compile /app/app.py /app/mesh_operation_manager.py /app/v500_patch.py /app/v502_live_refresh_patch.py \
     && if [ -f /app/owut_manager.py ]; then python3 -m py_compile /app/owut_manager.py; fi \
     && python3 -c "from jinja2 import Environment, FileSystemLoader; Environment(loader=FileSystemLoader('/app/templates')).get_template('index.html')"
 EXPOSE 8088

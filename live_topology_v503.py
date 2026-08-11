@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import re
 import threading
@@ -14,7 +15,7 @@ from zoneinfo import ZoneInfo
 import paramiko
 from flask import jsonify
 
-VERSION = "5.0.6"
+VERSION = "5.0.7"
 ROUTERS: List[Tuple[str, str]] = [
     ("192.168.30.1", "ROUTER"),
     ("192.168.30.2", "MESH1"),
@@ -27,7 +28,6 @@ SSH_PASS = os.environ.get("MESH_SSH_PASS", "root")
 SSH_TIMEOUT = max(2, int(os.environ.get("MESH_SSH_TIMEOUT", "6")))
 POLL_SECONDS = max(3, int(os.environ.get("MESH_LIVE_TOPOLOGY_POLL", "5")))
 HEALTH_SECONDS = max(POLL_SECONDS, int(os.environ.get("MESH_LIVE_HEALTH_POLL", "15")))
-CLIENT_TTL_SECONDS = max(POLL_SECONDS * 3, int(os.environ.get("MESH_CLIENT_TTL_SECONDS", "45")))
 NODE_FAILURE_GRACE = max(1, int(os.environ.get("MESH_NODE_FAILURE_GRACE", "2")))
 
 try:
@@ -184,9 +184,6 @@ class LiveTopologyCollector:
         self.updated_at = ""
         self.last_duration_ms = 0
         self._health_cache: Dict[str, Dict[str, Any]] = {}
-        # Stabilizace klientů je pouze v RAM. Jediný krátce neúplný station/FDB
-        # vzorek proto nesníží počty klientů v dashboardu.
-        self._client_registry: Dict[str, Dict[str, Any]] = {}
         self._node_failures: Dict[str, int] = {ip: 0 for ip, _name in ROUTERS}
         self._host_cpu_prev: Optional[Tuple[int, int]] = None
         self.ihost: Dict[str, Any] = {
@@ -227,6 +224,14 @@ done
 printf 'TEMP=%s\n' "$TEMP"
 printf '__SYS_END__\n'
 
+# Klienti AP: hostapd ubus je autoritativní zdroj aktuálně asociovaných STA.
+for OBJ in $(ubus list 'hostapd.*' 2>/dev/null || true); do
+  printf '__HOSTAPD_BEGIN__ %s\n' "$OBJ"
+  ubus call "$OBJ" get_clients 2>/dev/null || printf '{}\n'
+  printf '__HOSTAPD_END__\n'
+done
+
+# iw se dál používá pro mesh peer RSSI/bitrate a jako fallback pro klienty.
 for IF in $(iw dev 2>/dev/null | awk '$1=="Interface" {print $2}'); do
   printf '__IFACE_BEGIN__ %s\n' "$IF"
   iw dev "$IF" info 2>/dev/null || true
@@ -280,6 +285,40 @@ printf '__FDB_END__\n'
 
         wifi24: set[str] = set()
         wifi5: set[str] = set()
+        hostapd_objects = 0
+        hostapd_parse_ok = 0
+
+        # OpenWrt hostapd get_clients vrací asociované klienty a frekvenci BSS.
+        # Tím se pásmo neurčuje nepřímo podle iw interface a odpojená STA se
+        # odstraní hned, jak ji hostapd přestane uvádět jako assoc=true.
+        for hm in re.finditer(r"__HOSTAPD_BEGIN__\s+(\S+)\n(.*?)__HOSTAPD_END__", out, re.S):
+            hostapd_objects += 1
+            body = hm.group(2).strip()
+            try:
+                payload = json.loads(body or "{}")
+            except json.JSONDecodeError:
+                continue
+            hostapd_parse_ok += 1
+            try:
+                freq = int(payload.get("freq") or 0)
+            except (TypeError, ValueError):
+                freq = 0
+            target = wifi24 if 2400 <= freq < 3000 else wifi5 if 4900 <= freq < 5925 else None
+            if target is None:
+                continue
+            clients_obj = payload.get("clients") or {}
+            if not isinstance(clients_obj, dict):
+                continue
+            for mac, info in clients_obj.items():
+                mac_s = str(mac).lower()
+                if not MAC_RE.match(mac_s):
+                    continue
+                # assoc je rozhodující. Pro případ staršího hostapd bez tohoto
+                # pole přijmeme záznam, ale explicitní assoc=false vždy vyřadíme.
+                if isinstance(info, dict) and info.get("assoc") is False:
+                    continue
+                target.add(mac_s)
+
         mesh_ifaces: List[Dict[str, str]] = []
         mesh_peers: List[Dict[str, Any]] = []
         wireless_ifnames = {row["ifname"] for row in ifaces}
@@ -288,9 +327,11 @@ printf '__FDB_END__\n'
             typ = iface["type"]
             stations = iface["stations"]
             if typ == "ap":
-                target = wifi24 if iface["band"] == "2.4" else wifi5 if iface["band"] == "5" else None
-                if target is not None:
-                    target.update(row["mac"] for row in stations if MAC_RE.match(row["mac"]))
+                # Fallback pouze když hostapd ubus není na daném uzlu dostupný.
+                if hostapd_objects == 0 or hostapd_parse_ok == 0:
+                    target = wifi24 if iface["band"] == "2.4" else wifi5 if iface["band"] == "5" else None
+                    if target is not None:
+                        target.update(row["mac"] for row in stations if MAC_RE.match(row["mac"]))
             elif "mesh" in typ:
                 if iface["mac"]:
                     mesh_ifaces.append({"ifname": iface["ifname"], "mac": iface["mac"]})
@@ -406,35 +447,6 @@ printf '__FDB_END__\n'
             "updated_at": _now_text(),
         }
 
-    def _stabilize_total_clients(self, fetched: Dict[str, Dict[str, Any]], now_mono: float) -> None:
-        """Stabilizuje POUZE globální počet klientů.
-
-        Počty klientů v jednotlivých uzlech a pásmech 2.4/5 GHz zůstávají
-        přesně z aktuálního živého vzorku. Registry TTL se používá pouze pro
-        horní metriku KLIENTI, aby jediný neúplný station dump nezpůsobil
-        krátký skok např. 30 -> 23 -> 30.
-        """
-        seen_now: set[str] = set()
-        for ip, _name in ROUTERS:
-            node = fetched.get(ip) or {}
-            if not node.get("_sample_ok"):
-                continue
-            for key in ("wifi_client_macs_24", "wifi_client_macs_5", "lan_client_macs"):
-                for mac in node.get(key, []) or []:
-                    mac = str(mac).lower()
-                    if MAC_RE.match(mac):
-                        seen_now.add(mac)
-
-        for mac in seen_now:
-            self._client_registry[mac] = {"last_seen": now_mono}
-
-        expired = [
-            mac for mac, row in self._client_registry.items()
-            if now_mono - float(row.get("last_seen", 0.0)) > CLIENT_TTL_SECONDS
-        ]
-        for mac in expired:
-            self._client_registry.pop(mac, None)
-
     @staticmethod
     def _build_links(nodes: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         mac_to_ip: Dict[str, str] = {}
@@ -549,7 +561,6 @@ printf '__FDB_END__\n'
 
         ihost = self._read_ihost_stats()
         with self.lock:
-            self._stabilize_total_clients(fetched, time.monotonic())
             links = self._build_links(fetched)
             self.nodes = fetched
             self.links = links
@@ -564,8 +575,8 @@ printf '__FDB_END__\n'
             links = copy.deepcopy(self.links)
             online = sum(1 for node in nodes.values() if node.get("online"))
 
-            # Pásma a počty v topologii jsou LIVE z právě načteného vzorku.
-            # Pouze celková metrika KLIENTI používá krátkou TTL paměť v RAM.
+            # 2.4 GHz, 5 GHz i CELKEM jsou ze stejného právě načteného
+            # živého vzorku. Deduplication je podle MAC napříč všemi uzly.
             live_mac24: set[str] = set()
             live_mac5: set[str] = set()
             live_lan: set[str] = set()
@@ -576,11 +587,7 @@ printf '__FDB_END__\n'
                 live_mac5.update(str(m).lower() for m in (node.get("wifi_client_macs_5") or []))
                 live_lan.update(str(m).lower() for m in (node.get("lan_client_macs") or []))
 
-            now_mono = time.monotonic()
-            stable_clients = {
-                mac for mac, row in self._client_registry.items()
-                if now_mono - float(row.get("last_seen", 0.0)) <= CLIENT_TTL_SECONDS
-            }
+            live_clients = live_mac24 | live_mac5 | live_lan
 
             public_nodes = []
             for ip, _name in ROUTERS:
@@ -598,14 +605,13 @@ printf '__FDB_END__\n'
                 "clock": _clock_text(),
                 "poll_seconds": POLL_SECONDS,
                 "health_seconds": HEALTH_SECONDS,
-                "client_ttl_seconds": CLIENT_TTL_SECONDS,
                 "sample_duration_ms": self.last_duration_ms,
                 "ihost": copy.deepcopy(self.ihost),
                 "summary": {
                     "online_routers": online,
                     "router_count": len(ROUTERS),
                     "mesh_links": len(links),
-                    "clients": len(stable_clients),
+                    "clients": len(live_clients),
                     "clients_24": len(live_mac24),
                     "clients_5": len(live_mac5),
                     "lan_clients": len(live_lan),

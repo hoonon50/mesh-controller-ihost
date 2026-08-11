@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__MESH_V506_LIVE_TOPOLOGY__) return;
-  window.__MESH_V506_LIVE_TOPOLOGY__ = true;
+  if (window.__MESH_V507_LIVE_TOPOLOGY__) return;
+  window.__MESH_V507_LIVE_TOPOLOGY__ = true;
 
   const API = '/api/v503/live-topology';
   const REFRESH_MS = 5000;
@@ -112,7 +112,7 @@
     stage = document.createElement('div');
     stage.className = 'v503-live-stage';
     stage.id = 'v503LiveTopology';
-    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v5.0.6 · čekám…</div>';
+    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v5.0.7 · čekám…</div>';
     panel.appendChild(stage);
     svg = stage.querySelector('.v503-live-svg');
     status = stage.querySelector('.v503-live-status');
@@ -345,8 +345,8 @@
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v5.0.6 · ${payload.clock || ''} · #${payload.sequence || 0}`
-        : `LIVE v5.0.6 · čekám na routery`;
+        ? `LIVE v5.0.7 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        : `LIVE v5.0.7 · čekám na routery`;
       status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
     }
   }
@@ -361,7 +361,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v5.0.6 · API nedostupné';
+        status.textContent = 'LIVE v5.0.7 · API nedostupné';
         status.title = String(err);
       }
     } finally {

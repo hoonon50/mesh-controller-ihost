@@ -7,13 +7,14 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import paramiko
 from flask import jsonify
 
-VERSION = "5.0.3"
+VERSION = "5.0.5"
 ROUTERS: List[Tuple[str, str]] = [
     ("192.168.30.1", "ROUTER"),
     ("192.168.30.2", "MESH1"),
@@ -26,6 +27,8 @@ SSH_PASS = os.environ.get("MESH_SSH_PASS", "root")
 SSH_TIMEOUT = max(2, int(os.environ.get("MESH_SSH_TIMEOUT", "6")))
 POLL_SECONDS = max(3, int(os.environ.get("MESH_LIVE_TOPOLOGY_POLL", "5")))
 HEALTH_SECONDS = max(POLL_SECONDS, int(os.environ.get("MESH_LIVE_HEALTH_POLL", "15")))
+CLIENT_TTL_SECONDS = max(POLL_SECONDS * 3, int(os.environ.get("MESH_CLIENT_TTL_SECONDS", "45")))
+NODE_FAILURE_GRACE = max(1, int(os.environ.get("MESH_NODE_FAILURE_GRACE", "2")))
 
 try:
     LOCAL_TZ = ZoneInfo(os.environ.get("TZ", "Europe/Prague"))
@@ -181,6 +184,17 @@ class LiveTopologyCollector:
         self.updated_at = ""
         self.last_duration_ms = 0
         self._health_cache: Dict[str, Dict[str, Any]] = {}
+        # Stabilizace klientů je pouze v RAM. Jediný krátce neúplný station/FDB
+        # vzorek proto nesníží počty klientů v dashboardu.
+        self._client_registry: Dict[str, Dict[str, Any]] = {}
+        self._node_failures: Dict[str, int] = {ip: 0 for ip, _name in ROUTERS}
+        self._host_cpu_prev: Optional[Tuple[int, int]] = None
+        self.ihost: Dict[str, Any] = {
+            "cpu_percent": None,
+            "ram_percent": None,
+            "temp_c": None,
+            "updated_at": "",
+        }
 
     def _connect(self, ip: str) -> paramiko.SSHClient:
         ssh = paramiko.SSHClient()
@@ -324,7 +338,148 @@ printf '__FDB_END__\n'
             "lan_client_macs": sorted(lan_macs),
             "error": "",
             "updated_at": _now_text(),
+            "stale": False,
+            "_sample_ok": True,
         }
+
+    def _read_ihost_stats(self) -> Dict[str, Any]:
+        """Lokální iHost statistiky; žádné SSH a žádný zápis na SD."""
+        cpu_percent: Optional[int] = None
+        ram_percent: Optional[int] = None
+        temp_c: Optional[int] = None
+
+        try:
+            first = Path("/proc/stat").read_text(encoding="utf-8", errors="replace").splitlines()[0]
+            fields = [int(x) for x in first.split()[1:]]
+            if len(fields) >= 4:
+                total = sum(fields)
+                idle = fields[3] + (fields[4] if len(fields) > 4 else 0)
+                prev = self._host_cpu_prev
+                self._host_cpu_prev = (total, idle)
+                if prev is not None:
+                    delta_total = total - prev[0]
+                    delta_idle = idle - prev[1]
+                    if delta_total > 0:
+                        cpu_percent = max(0, min(100, round(100.0 * (delta_total - delta_idle) / delta_total)))
+        except Exception:
+            pass
+
+        try:
+            mem: Dict[str, int] = {}
+            for line in Path("/proc/meminfo").read_text(encoding="utf-8", errors="replace").splitlines():
+                if ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                m = re.search(r"(\d+)", value)
+                if m:
+                    mem[key] = int(m.group(1))
+            total_kb = mem.get("MemTotal", 0)
+            avail_kb = mem.get("MemAvailable", mem.get("MemFree", 0))
+            if total_kb > 0:
+                ram_percent = max(0, min(100, round(100.0 * (total_kb - avail_kb) / total_kb)))
+        except Exception:
+            pass
+
+        # U iHostu bereme nejvyšší platnou SoC/thermal teplotu. Některé Docker
+        # konfigurace /sys/class/thermal nezpřístupní; pak UI zobrazí pomlčku.
+        temps: List[int] = []
+        try:
+            candidates = list(Path("/sys/class/thermal").glob("thermal_zone*/temp"))
+            candidates += list(Path("/sys/class/hwmon").glob("hwmon*/temp*_input"))
+            for path in candidates:
+                try:
+                    raw = int(path.read_text(encoding="utf-8", errors="replace").strip())
+                    value = round(raw / 1000) if abs(raw) > 1000 else raw
+                    if 0 < value < 150:
+                        temps.append(value)
+                except Exception:
+                    continue
+            if temps:
+                temp_c = max(temps)
+        except Exception:
+            pass
+
+        return {
+            "cpu_percent": cpu_percent,
+            "ram_percent": ram_percent,
+            "temp_c": temp_c,
+            "updated_at": _now_text(),
+        }
+
+    def _stabilize_clients(self, fetched: Dict[str, Dict[str, Any]], now_mono: float) -> None:
+        """Drží klienta CLIENT_TTL_SECONDS od posledního potvrzeného výskytu.
+
+        Jednorázově prázdný/částečný station dump nebo FDB tak nezpůsobí skok
+        30 -> 23 -> 30. Při skutečném odpojení klient zmizí nejpozději po TTL.
+        """
+        observations: Dict[str, List[Dict[str, str]]] = {}
+        router_order = {ip: idx for idx, (ip, _name) in enumerate(ROUTERS)}
+        medium_priority = {"2.4": 0, "5": 1, "lan": 2}
+
+        for ip, _name in ROUTERS:
+            node = fetched.get(ip) or {}
+            if not node.get("_sample_ok"):
+                continue
+            for medium, key in (
+                ("2.4", "wifi_client_macs_24"),
+                ("5", "wifi_client_macs_5"),
+                ("lan", "lan_client_macs"),
+            ):
+                for mac in node.get(key, []) or []:
+                    mac = str(mac).lower()
+                    if MAC_RE.match(mac):
+                        observations.setdefault(mac, []).append({"node_ip": ip, "medium": medium})
+
+        for mac, choices in observations.items():
+            old = self._client_registry.get(mac)
+            chosen: Optional[Dict[str, str]] = None
+            # Při krátkém roamingovém překryvu preferujeme dosavadní připojení,
+            # dokud ho starý AP ještě opravdu hlásí. Tím neflapují node counts.
+            if old:
+                for candidate in choices:
+                    if candidate["node_ip"] == old.get("node_ip") and candidate["medium"] == old.get("medium"):
+                        chosen = candidate
+                        break
+                if chosen is None:
+                    for candidate in choices:
+                        if candidate["node_ip"] == old.get("node_ip"):
+                            chosen = candidate
+                            break
+            if chosen is None:
+                choices.sort(key=lambda c: (medium_priority.get(c["medium"], 9), router_order.get(c["node_ip"], 99)))
+                chosen = choices[0]
+            self._client_registry[mac] = {
+                "node_ip": chosen["node_ip"],
+                "medium": chosen["medium"],
+                "last_seen": now_mono,
+            }
+
+        expired = [
+            mac for mac, row in self._client_registry.items()
+            if now_mono - float(row.get("last_seen", 0.0)) > CLIENT_TTL_SECONDS
+        ]
+        for mac in expired:
+            self._client_registry.pop(mac, None)
+
+        by_node: Dict[str, Dict[str, set[str]]] = {
+            ip: {"2.4": set(), "5": set(), "lan": set()} for ip, _name in ROUTERS
+        }
+        for mac, row in self._client_registry.items():
+            ip = str(row.get("node_ip") or "")
+            medium = str(row.get("medium") or "")
+            if ip in by_node and medium in by_node[ip]:
+                by_node[ip][medium].add(mac)
+
+        for ip, _name in ROUTERS:
+            node = fetched[ip]
+            groups = by_node[ip]
+            node["wifi_client_macs_24"] = sorted(groups["2.4"])
+            node["wifi_client_macs_5"] = sorted(groups["5"])
+            node["lan_client_macs"] = sorted(groups["lan"])
+            node["clients_24"] = len(groups["2.4"])
+            node["clients_5"] = len(groups["5"])
+            node["lan_clients"] = len(groups["lan"])
+            node["clients"] = len(groups["2.4"] | groups["5"] | groups["lan"])
 
     @staticmethod
     def _build_links(nodes: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -379,26 +534,44 @@ printf '__FDB_END__\n'
                 ip, name = futures[future]
                 try:
                     fetched[ip] = future.result()
+                    self._node_failures[ip] = 0
                 except Exception as exc:
+                    self._node_failures[ip] = self._node_failures.get(ip, 0) + 1
                     old = copy.deepcopy(self.nodes.get(ip, {}))
-                    fetched[ip] = {
-                        **old,
-                        "ip": ip,
-                        "name": name,
-                        "hostname": old.get("hostname") or name,
-                        "online": False,
-                        "clients": 0,
-                        "clients_24": 0,
-                        "clients_5": 0,
-                        "lan_clients": 0,
-                        "mesh_ifaces": [],
-                        "mesh_peers": [],
-                        "wifi_client_macs_24": [],
-                        "wifi_client_macs_5": [],
-                        "lan_client_macs": [],
-                        "error": str(exc),
-                        "updated_at": _now_text(),
-                    }
+                    # Dva jednotlivé neúspěšné SSH vzorky ještě neprohlásí uzel
+                    # za OFFLINE a nezahodí jeho poslední mesh data.
+                    if old.get("online") and self._node_failures[ip] <= NODE_FAILURE_GRACE:
+                        fetched[ip] = {
+                            **old,
+                            "ip": ip,
+                            "name": name,
+                            "hostname": old.get("hostname") or name,
+                            "online": True,
+                            "stale": True,
+                            "_sample_ok": False,
+                            "error": str(exc),
+                        }
+                    else:
+                        fetched[ip] = {
+                            **old,
+                            "ip": ip,
+                            "name": name,
+                            "hostname": old.get("hostname") or name,
+                            "online": False,
+                            "stale": False,
+                            "clients": 0,
+                            "clients_24": 0,
+                            "clients_5": 0,
+                            "lan_clients": 0,
+                            "mesh_ifaces": [],
+                            "mesh_peers": [],
+                            "wifi_client_macs_24": [],
+                            "wifi_client_macs_5": [],
+                            "lan_client_macs": [],
+                            "_sample_ok": False,
+                            "error": str(exc),
+                            "updated_at": _now_text(),
+                        }
 
         # CPU/uptime publikujeme nejvýše každých HEALTH_SECONDS. Samotné SSH je už
         # otevřené kvůli topologii, takže to nepřidává další spojení na router.
@@ -420,10 +593,13 @@ printf '__FDB_END__\n'
             elif not node.get("online"):
                 node.update({"cpu_c": None, "uptime_seconds": None, "uptime": "—"})
 
-        links = self._build_links(fetched)
+        ihost = self._read_ihost_stats()
         with self.lock:
+            self._stabilize_clients(fetched, time.monotonic())
+            links = self._build_links(fetched)
             self.nodes = fetched
             self.links = links
+            self.ihost = ihost
             self.sequence += 1
             self.updated_at = _now_text()
             self.last_duration_ms = int((time.monotonic() - started) * 1000)
@@ -434,25 +610,29 @@ printf '__FDB_END__\n'
             links = copy.deepcopy(self.links)
             online = sum(1 for node in nodes.values() if node.get("online"))
 
-            # Globální klienti jsou unikátní MAC napříč uzly.
+            # Globální počet vychází ze stabilizovaného registru klientů v RAM,
+            # nikoli pouze z jediného okamžitého station dumpu.
             mac24: set[str] = set()
             mac5: set[str] = set()
             lan: set[str] = set()
-            for node in nodes.values():
-                if not node.get("online"):
+            now_mono = time.monotonic()
+            for mac, row in self._client_registry.items():
+                if now_mono - float(row.get("last_seen", 0.0)) > CLIENT_TTL_SECONDS:
                     continue
-                mac24.update(node.get("wifi_client_macs_24", []))
-                mac5.update(node.get("wifi_client_macs_5", []))
-                lan.update(node.get("lan_client_macs", []))
-            lan.difference_update(mac24)
-            lan.difference_update(mac5)
+                medium = row.get("medium")
+                if medium == "2.4":
+                    mac24.add(mac)
+                elif medium == "5":
+                    mac5.add(mac)
+                elif medium == "lan":
+                    lan.add(mac)
             all_clients = mac24 | mac5 | lan
 
             public_nodes = []
             for ip, _name in ROUTERS:
                 n = copy.deepcopy(nodes[ip])
                 # Interní seznamy MAC nejsou potřeba v browseru.
-                for key in ("mesh_ifaces", "mesh_peers", "wifi_client_macs_24", "wifi_client_macs_5", "lan_client_macs"):
+                for key in ("mesh_ifaces", "mesh_peers", "wifi_client_macs_24", "wifi_client_macs_5", "lan_client_macs", "_sample_ok"):
                     n.pop(key, None)
                 public_nodes.append(n)
 
@@ -464,7 +644,9 @@ printf '__FDB_END__\n'
                 "clock": _clock_text(),
                 "poll_seconds": POLL_SECONDS,
                 "health_seconds": HEALTH_SECONDS,
+                "client_ttl_seconds": CLIENT_TTL_SECONDS,
                 "sample_duration_ms": self.last_duration_ms,
+                "ihost": copy.deepcopy(self.ihost),
                 "summary": {
                     "online_routers": online,
                     "router_count": len(ROUTERS),

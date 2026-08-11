@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__MESH_V504_LIVE_TOPOLOGY__) return;
-  window.__MESH_V504_LIVE_TOPOLOGY__ = true;
+  if (window.__MESH_V505_LIVE_TOPOLOGY__) return;
+  window.__MESH_V505_LIVE_TOPOLOGY__ = true;
 
   const API = '/api/v503/live-topology';
   const REFRESH_MS = 5000;
@@ -112,7 +112,7 @@
     stage = document.createElement('div');
     stage.className = 'v503-live-stage';
     stage.id = 'v503LiveTopology';
-    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v5.0.4 · čekám…</div>';
+    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v5.0.5 · čekám…</div>';
     panel.appendChild(stage);
     svg = stage.querySelector('.v503-live-svg');
     status = stage.querySelector('.v503-live-status');
@@ -208,6 +208,7 @@
     const el = nodes.get(data.ip);
     if (!el) return;
     el.classList.toggle('offline', !data.online);
+    el.classList.toggle('stale', !!data.stale);
     const state = el.querySelector('.v503-node-state');
     if (state) state.textContent = data.online ? `ONLINE · ${Number(data.clients || 0)} klientů` : 'OFFLINE';
     const cpu = el.querySelector('[data-k="cpu"]');
@@ -244,6 +245,41 @@
     return null;
   }
 
+  function mountIhostTile() {
+    let tile = document.getElementById('v505IhostTile');
+    if (tile && document.body.contains(tile)) return tile;
+    const wrap = document.querySelector('.wan-usage-wrap');
+    if (!wrap) return null;
+    wrap.classList.add('v505-with-ihost');
+    tile = document.createElement('div');
+    tile.id = 'v505IhostTile';
+    tile.className = 'wan-usage-tile v505-ihost-tile';
+    tile.title = 'SONOFF iHost · systémové využití Docker hostu';
+    tile.innerHTML = `
+      <div class="wan-usage-tile-head v505-ihost-head"><span>iHOST</span></div>
+      <div class="v505-ihost-values">
+        <span>CPU <b data-v505="cpu">—</b></span>
+        <span>RAM <b data-v505="ram">—</b></span>
+        <span>TEMP <b data-v505="temp">—</b></span>
+      </div>`;
+    wrap.prepend(tile);
+    return tile;
+  }
+
+  function updateIhost(stats) {
+    const tile = mountIhostTile();
+    if (!tile) return;
+    const cpu = tile.querySelector('[data-v505="cpu"]');
+    const ram = tile.querySelector('[data-v505="ram"]');
+    const temp = tile.querySelector('[data-v505="temp"]');
+    const cpuVal = Number(stats && stats.cpu_percent);
+    const ramVal = Number(stats && stats.ram_percent);
+    const tempVal = Number(stats && stats.temp_c);
+    if (cpu) cpu.textContent = Number.isFinite(cpuVal) ? `${cpuVal}%` : '—';
+    if (ram) ram.textContent = Number.isFinite(ramVal) ? `${ramVal}%` : '—';
+    if (temp) temp.textContent = Number.isFinite(tempVal) ? `${tempVal}°C` : '—';
+  }
+
   function updateMetrics(summary, clock) {
     const values = {
       'ONLINE ROUTERY': `${summary.online_routers || 0} / ${summary.router_count || 5}`,
@@ -266,11 +302,12 @@
     for (const node of (payload.nodes || [])) updateNode(node);
     drawLinks(payload.links || []);
     updateMetrics(payload.summary || {}, payload.clock || '');
+    updateIhost(payload.ihost || {});
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v5.0.4 · ${payload.clock || ''} · #${payload.sequence || 0}`
-        : `LIVE v5.0.4 · čekám na routery`;
+        ? `LIVE v5.0.5 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        : `LIVE v5.0.5 · čekám na routery`;
       status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
     }
   }
@@ -285,7 +322,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v5.0.4 · API nedostupné';
+        status.textContent = 'LIVE v5.0.5 · API nedostupné';
         status.title = String(err);
       }
     } finally {

@@ -115,3 +115,44 @@
   visibility: hidden !important;
   pointer-events: none !important;
 }
+
+/* v5.0.5 – třetí horní dlaždice iHOST, přesně v řadě před DOWNLOAD/UPLOAD */
+.wan-usage-wrap.v505-with-ihost {
+  grid-template-columns: repeat(3, minmax(145px, 1fr)) !important;
+  min-width: 451px !important;
+}
+.v505-ihost-tile {
+  height: 50px !important;
+  min-height: 0 !important;
+  padding: 5px 9px 4px !important;
+}
+.v505-ihost-head {
+  margin-bottom: 4px !important;
+}
+.v505-ihost-values {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 7px;
+  color: #9ca6b3;
+  font-size: 8.5px;
+  line-height: 1;
+  font-weight: 760;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.v505-ihost-values b {
+  margin-left: 2px;
+  color: #eef2f5;
+  font-size: 11px;
+  font-weight: 850;
+}
+@media (max-width: 860px) {
+  .wan-usage-wrap.v505-with-ihost {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    min-width: 0 !important;
+  }
+  .v505-ihost-values { gap: 4px; font-size: 7.8px; }
+  .v505-ihost-values b { font-size: 10px; }
+}

@@ -7,16 +7,16 @@ APP = ROOT / "app.py"
 INDEX = ROOT / "templates" / "index.html"
 
 if not APP.exists():
-    raise SystemExit("v5.0.5: app.py nenalezen")
+    raise SystemExit("v5.0.6: app.py nenalezen")
 if not INDEX.exists():
-    raise SystemExit("v5.0.5: templates/index.html nenalezen")
+    raise SystemExit("v5.0.6: templates/index.html nenalezen")
 
 app = APP.read_text(encoding="utf-8")
-marker = "# v5.0.5 explicit live topology API"
+marker = "# v5.0.6 explicit live topology API"
 if marker not in app:
     m = re.search(r"(?m)^(\s*app\s*=\s*Flask\([^\n]*\)\s*)$", app)
     if not m:
-        raise SystemExit("v5.0.5: nepodařilo se najít app = Flask(...)")
+        raise SystemExit("v5.0.6: nepodařilo se najít app = Flask(...)")
     injection = (
         m.group(1) + "\n\n" + marker + "\n"
         + "from live_topology_v503 import init_live_topology_v503\n"
@@ -27,15 +27,15 @@ APP.write_text(app, encoding="utf-8")
 
 html = INDEX.read_text(encoding="utf-8")
 
-# v5.0.5 už nepoužívá v5.0.2 interception timerů. Pokud by byl tag v šabloně
+# v5.0.6 už nepoužívá v5.0.2 interception timerů. Pokud by byl tag v šabloně
 # z předchozího buildu, explicitně ho odstraníme.
 html = re.sub(
     r'<script\s+[^>]*src=["\']/static/v502_live_refresh_bootstrap\.js(?:\?v=[^"\']+)?["\'][^>]*></script>\s*',
     '', html, flags=re.I,
 )
 
-css_tag = '<link rel="stylesheet" href="/static/v503_live_topology.css?v=5.0.5">'
-js_tag = '<script src="/static/v503_live_topology.js?v=5.0.5"></script>'
+css_tag = '<link rel="stylesheet" href="/static/v503_live_topology.css?v=5.0.6">'
+js_tag = '<script src="/static/v503_live_topology.js?v=5.0.6"></script>'
 
 html = re.sub(
     r'<link\s+[^>]*href=["\']/static/v503_live_topology\.css\?v=[^"\']+["\'][^>]*>',
@@ -48,11 +48,11 @@ html = re.sub(
 
 if css_tag not in html:
     if "</head>" not in html.lower():
-        raise SystemExit("v5.0.5: index.html nemá </head>")
+        raise SystemExit("v5.0.6: index.html nemá </head>")
     html = re.sub(r"</head>", f"  {css_tag}\n</head>", html, count=1, flags=re.I)
 if js_tag not in html:
     if "</body>" not in html.lower():
-        raise SystemExit("v5.0.5: index.html nemá </body>")
+        raise SystemExit("v5.0.6: index.html nemá </body>")
     html = re.sub(r"</body>", f"  {js_tag}\n</body>", html, count=1, flags=re.I)
 
 # Cache bust Operation Manageru.
@@ -66,5 +66,5 @@ html = re.sub(
 )
 
 INDEX.write_text(html, encoding="utf-8")
-print("v5.0.5: explicitní /api/v503/live-topology + vlastní živý topology renderer")
-print("v5.0.5: starý v5.0.2 timer interception odstraněn")
+print("v5.0.6: explicitní /api/v503/live-topology + vlastní živý topology renderer")
+print("v5.0.6: starý v5.0.2 timer interception odstraněn")

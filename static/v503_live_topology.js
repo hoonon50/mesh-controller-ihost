@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__MESH_V505_LIVE_TOPOLOGY__) return;
-  window.__MESH_V505_LIVE_TOPOLOGY__ = true;
+  if (window.__MESH_V506_LIVE_TOPOLOGY__) return;
+  window.__MESH_V506_LIVE_TOPOLOGY__ = true;
 
   const API = '/api/v503/live-topology';
   const REFRESH_MS = 5000;
@@ -112,7 +112,7 @@
     stage = document.createElement('div');
     stage.className = 'v503-live-stage';
     stage.id = 'v503LiveTopology';
-    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v5.0.5 · čekám…</div>';
+    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v5.0.6 · čekám…</div>';
     panel.appendChild(stage);
     svg = stage.querySelector('.v503-live-svg');
     status = stage.querySelector('.v503-live-status');
@@ -245,24 +245,63 @@
     return null;
   }
 
+  function findHeaderPlacement() {
+    const title = exactTextElement('OpenWRT MESH CONTROLLER PRO');
+    const refresh = exactTextElement('Obnovit stav');
+    if (!title) return null;
+
+    // Najdi nejmenší horní kontejner, který obsahuje titul i tlačítko refresh.
+    let host = title.parentElement;
+    for (let i = 0; host && i < 6; i += 1, host = host.parentElement) {
+      const r = host.getBoundingClientRect();
+      if (r.width > 500 && r.height >= 42 && r.height <= 110 && (!refresh || host.contains(refresh))) {
+        return {host, title, refresh};
+      }
+    }
+    return {host: title.parentElement, title, refresh};
+  }
+
   function mountIhostTile() {
-    let tile = document.getElementById('v505IhostTile');
+    let tile = document.getElementById('v506IhostTile');
     if (tile && document.body.contains(tile)) return tile;
-    const wrap = document.querySelector('.wan-usage-wrap');
-    if (!wrap) return null;
-    wrap.classList.add('v505-with-ihost');
+
+    // Odstraň případný v5.0.5 iHOST z WAN gridu.
+    const old = document.getElementById('v505IhostTile');
+    if (old) old.remove();
+    const wanWrap = document.querySelector('.wan-usage-wrap');
+    if (wanWrap) wanWrap.classList.remove('v505-with-ihost');
+
+    const place = findHeaderPlacement();
+    if (!place || !place.host) return null;
+    place.host.classList.add('v506-header-host');
+
     tile = document.createElement('div');
-    tile.id = 'v505IhostTile';
-    tile.className = 'wan-usage-tile v505-ihost-tile';
+    tile.id = 'v506IhostTile';
+    tile.className = 'v506-ihost-tile';
     tile.title = 'SONOFF iHost · systémové využití Docker hostu';
     tile.innerHTML = `
-      <div class="wan-usage-tile-head v505-ihost-head"><span>iHOST</span></div>
-      <div class="v505-ihost-values">
+      <div class="v506-ihost-head">iHOST</div>
+      <div class="v506-ihost-values">
         <span>CPU <b data-v505="cpu">—</b></span>
         <span>RAM <b data-v505="ram">—</b></span>
         <span>TEMP <b data-v505="temp">—</b></span>
       </div>`;
-    wrap.prepend(tile);
+
+    // Preferovaný layout: TITUL/SUBTITLE → iHOST → OBNOVIT STAV → ... → WAN.
+    const refresh = place.refresh;
+    if (refresh) {
+      let refreshBox = refresh;
+      while (refreshBox.parentElement && refreshBox.parentElement !== place.host && refreshBox.parentElement.children.length === 1) {
+        refreshBox = refreshBox.parentElement;
+      }
+      if (refreshBox.parentElement === place.host) {
+        place.host.insertBefore(tile, refreshBox);
+      } else {
+        place.host.appendChild(tile);
+      }
+    } else {
+      place.host.appendChild(tile);
+    }
     return tile;
   }
 
@@ -306,8 +345,8 @@
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v5.0.5 · ${payload.clock || ''} · #${payload.sequence || 0}`
-        : `LIVE v5.0.5 · čekám na routery`;
+        ? `LIVE v5.0.6 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        : `LIVE v5.0.6 · čekám na routery`;
       status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
     }
   }
@@ -322,7 +361,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v5.0.5 · API nedostupné';
+        status.textContent = 'LIVE v5.0.6 · API nedostupné';
         status.title = String(err);
       }
     } finally {

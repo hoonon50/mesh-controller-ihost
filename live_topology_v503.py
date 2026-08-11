@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import paramiko
 from flask import jsonify
 
-VERSION = "5.0.5"
+VERSION = "5.0.6"
 ROUTERS: List[Tuple[str, str]] = [
     ("192.168.30.1", "ROUTER"),
     ("192.168.30.2", "MESH1"),
@@ -406,53 +406,27 @@ printf '__FDB_END__\n'
             "updated_at": _now_text(),
         }
 
-    def _stabilize_clients(self, fetched: Dict[str, Dict[str, Any]], now_mono: float) -> None:
-        """Drží klienta CLIENT_TTL_SECONDS od posledního potvrzeného výskytu.
+    def _stabilize_total_clients(self, fetched: Dict[str, Dict[str, Any]], now_mono: float) -> None:
+        """Stabilizuje POUZE globální počet klientů.
 
-        Jednorázově prázdný/částečný station dump nebo FDB tak nezpůsobí skok
-        30 -> 23 -> 30. Při skutečném odpojení klient zmizí nejpozději po TTL.
+        Počty klientů v jednotlivých uzlech a pásmech 2.4/5 GHz zůstávají
+        přesně z aktuálního živého vzorku. Registry TTL se používá pouze pro
+        horní metriku KLIENTI, aby jediný neúplný station dump nezpůsobil
+        krátký skok např. 30 -> 23 -> 30.
         """
-        observations: Dict[str, List[Dict[str, str]]] = {}
-        router_order = {ip: idx for idx, (ip, _name) in enumerate(ROUTERS)}
-        medium_priority = {"2.4": 0, "5": 1, "lan": 2}
-
+        seen_now: set[str] = set()
         for ip, _name in ROUTERS:
             node = fetched.get(ip) or {}
             if not node.get("_sample_ok"):
                 continue
-            for medium, key in (
-                ("2.4", "wifi_client_macs_24"),
-                ("5", "wifi_client_macs_5"),
-                ("lan", "lan_client_macs"),
-            ):
+            for key in ("wifi_client_macs_24", "wifi_client_macs_5", "lan_client_macs"):
                 for mac in node.get(key, []) or []:
                     mac = str(mac).lower()
                     if MAC_RE.match(mac):
-                        observations.setdefault(mac, []).append({"node_ip": ip, "medium": medium})
+                        seen_now.add(mac)
 
-        for mac, choices in observations.items():
-            old = self._client_registry.get(mac)
-            chosen: Optional[Dict[str, str]] = None
-            # Při krátkém roamingovém překryvu preferujeme dosavadní připojení,
-            # dokud ho starý AP ještě opravdu hlásí. Tím neflapují node counts.
-            if old:
-                for candidate in choices:
-                    if candidate["node_ip"] == old.get("node_ip") and candidate["medium"] == old.get("medium"):
-                        chosen = candidate
-                        break
-                if chosen is None:
-                    for candidate in choices:
-                        if candidate["node_ip"] == old.get("node_ip"):
-                            chosen = candidate
-                            break
-            if chosen is None:
-                choices.sort(key=lambda c: (medium_priority.get(c["medium"], 9), router_order.get(c["node_ip"], 99)))
-                chosen = choices[0]
-            self._client_registry[mac] = {
-                "node_ip": chosen["node_ip"],
-                "medium": chosen["medium"],
-                "last_seen": now_mono,
-            }
+        for mac in seen_now:
+            self._client_registry[mac] = {"last_seen": now_mono}
 
         expired = [
             mac for mac, row in self._client_registry.items()
@@ -460,26 +434,6 @@ printf '__FDB_END__\n'
         ]
         for mac in expired:
             self._client_registry.pop(mac, None)
-
-        by_node: Dict[str, Dict[str, set[str]]] = {
-            ip: {"2.4": set(), "5": set(), "lan": set()} for ip, _name in ROUTERS
-        }
-        for mac, row in self._client_registry.items():
-            ip = str(row.get("node_ip") or "")
-            medium = str(row.get("medium") or "")
-            if ip in by_node and medium in by_node[ip]:
-                by_node[ip][medium].add(mac)
-
-        for ip, _name in ROUTERS:
-            node = fetched[ip]
-            groups = by_node[ip]
-            node["wifi_client_macs_24"] = sorted(groups["2.4"])
-            node["wifi_client_macs_5"] = sorted(groups["5"])
-            node["lan_client_macs"] = sorted(groups["lan"])
-            node["clients_24"] = len(groups["2.4"])
-            node["clients_5"] = len(groups["5"])
-            node["lan_clients"] = len(groups["lan"])
-            node["clients"] = len(groups["2.4"] | groups["5"] | groups["lan"])
 
     @staticmethod
     def _build_links(nodes: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -595,7 +549,7 @@ printf '__FDB_END__\n'
 
         ihost = self._read_ihost_stats()
         with self.lock:
-            self._stabilize_clients(fetched, time.monotonic())
+            self._stabilize_total_clients(fetched, time.monotonic())
             links = self._build_links(fetched)
             self.nodes = fetched
             self.links = links
@@ -610,23 +564,23 @@ printf '__FDB_END__\n'
             links = copy.deepcopy(self.links)
             online = sum(1 for node in nodes.values() if node.get("online"))
 
-            # Globální počet vychází ze stabilizovaného registru klientů v RAM,
-            # nikoli pouze z jediného okamžitého station dumpu.
-            mac24: set[str] = set()
-            mac5: set[str] = set()
-            lan: set[str] = set()
-            now_mono = time.monotonic()
-            for mac, row in self._client_registry.items():
-                if now_mono - float(row.get("last_seen", 0.0)) > CLIENT_TTL_SECONDS:
+            # Pásma a počty v topologii jsou LIVE z právě načteného vzorku.
+            # Pouze celková metrika KLIENTI používá krátkou TTL paměť v RAM.
+            live_mac24: set[str] = set()
+            live_mac5: set[str] = set()
+            live_lan: set[str] = set()
+            for node in nodes.values():
+                if not node.get("online"):
                     continue
-                medium = row.get("medium")
-                if medium == "2.4":
-                    mac24.add(mac)
-                elif medium == "5":
-                    mac5.add(mac)
-                elif medium == "lan":
-                    lan.add(mac)
-            all_clients = mac24 | mac5 | lan
+                live_mac24.update(str(m).lower() for m in (node.get("wifi_client_macs_24") or []))
+                live_mac5.update(str(m).lower() for m in (node.get("wifi_client_macs_5") or []))
+                live_lan.update(str(m).lower() for m in (node.get("lan_client_macs") or []))
+
+            now_mono = time.monotonic()
+            stable_clients = {
+                mac for mac, row in self._client_registry.items()
+                if now_mono - float(row.get("last_seen", 0.0)) <= CLIENT_TTL_SECONDS
+            }
 
             public_nodes = []
             for ip, _name in ROUTERS:
@@ -651,10 +605,10 @@ printf '__FDB_END__\n'
                     "online_routers": online,
                     "router_count": len(ROUTERS),
                     "mesh_links": len(links),
-                    "clients": len(all_clients),
-                    "clients_24": len(mac24),
-                    "clients_5": len(mac5),
-                    "lan_clients": len(lan),
+                    "clients": len(stable_clients),
+                    "clients_24": len(live_mac24),
+                    "clients_5": len(live_mac5),
+                    "lan_clients": len(live_lan),
                 },
                 "nodes": public_nodes,
                 "links": links,

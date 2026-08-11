@@ -10,7 +10,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     WAN_USAGE_SAVE_SECONDS=3600 \
     MESH_LIVE_TOPOLOGY_POLL=5 \
     MESH_LIVE_HEALTH_POLL=15 \
-    MESH_NODE_FAILURE_GRACE=2
+    MESH_NODE_FAILURE_GRACE=2 \
+    MESH_WIFI_POLICY_START_DELAY=20 \
+    MESH_WIFI_POLICY_RETRY_SECONDS=30 \
+    MESH_WIFI_POLICY_MAX_RETRIES=20 \
+    MESH_WIFI_MAX_INACTIVITY=60 \
+    MESH_WIFI_SKIP_INACTIVITY_POLL=0
 
 WORKDIR /app
 RUN apt-get update \
@@ -32,7 +37,8 @@ RUN mkdir -p /data/backups \
     && if [ -f /app/v3812_wan_history_patch.py ]; then python3 /app/v3812_wan_history_patch.py; fi \
     && python3 /app/v500_patch.py \
     && python3 /app/v503_live_topology_patch.py \
-    && python3 -m py_compile /app/app.py /app/mesh_operation_manager.py /app/live_topology_v503.py /app/v500_patch.py /app/v503_live_topology_patch.py \
+    && python3 /app/v600_wifi_ap_policy_patch.py \
+    && python3 -m py_compile /app/app.py /app/mesh_operation_manager.py /app/live_topology_v503.py /app/wifi_ap_policy_v600.py /app/v500_patch.py /app/v503_live_topology_patch.py /app/v600_wifi_ap_policy_patch.py \
     && if [ -f /app/owut_manager.py ]; then python3 -m py_compile /app/owut_manager.py; fi \
     && python3 -c "from jinja2 import Environment, FileSystemLoader; Environment(loader=FileSystemLoader('/app/templates')).get_template('index.html')"
 EXPOSE 8088

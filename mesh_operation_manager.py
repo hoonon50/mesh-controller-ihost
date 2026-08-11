@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import paramiko
 from flask import jsonify, request
 
-VERSION = "5.0.0"
+VERSION = "6.0.0"
 MAIN_IP = "192.168.30.1"
 IHOT_MESH_IP = "192.168.30.2"
 ROUTERS: List[Tuple[str, str]] = [
@@ -659,7 +659,7 @@ printf 'HOSTNAME=%s\nBOOT_ID=%s\nREVISION=%s\nVERSION=%s\nUPTIME=%s\nOVERLAY=%s\
         ihost_temp = self._ihost_temperature()
         ihost_text = f"{ihost_temp} °C" if ihost_temp is not None else "N/A"
         text_body = (
-            "OpenWRT MESH CONTROLLER PRO v5.0.0\n\n"
+            "OpenWRT MESH CONTROLLER PRO v6.0.0\n\n"
             f"Operace: {title}\nDatum: {_now_text()}\nVýsledek: {result}\n"
             f"Záloha: {state.get('backup_id') or '—'}\n\n"
             + "\n".join(rows_text)
@@ -668,11 +668,11 @@ printf 'HOSTNAME=%s\nBOOT_ID=%s\nREVISION=%s\nVERSION=%s\nUPTIME=%s\nOVERLAY=%s\
         banner = "#16a34a" if ok else "#dc2626"
         html_body = f'''<!doctype html><html><body style="margin:0;background:#f3f6f9;padding:20px 8px">
 <table role="presentation" width="100%"><tr><td align="center"><table role="presentation" width="760" style="width:100%;max-width:760px;background:#fff;border:1px solid #dce3ea;border-radius:14px;overflow:hidden;border-spacing:0;font-family:Arial,sans-serif">
-<tr><td style="background:#071a2d;padding:20px 24px;color:#fff"><b style="font-size:20px">OpenWRT MESH CONTROLLER PRO v5.0.0</b><div style="font-size:12px;color:#cbd5e1;margin-top:4px">{html.escape(title)}</div></td></tr>
+<tr><td style="background:#071a2d;padding:20px 24px;color:#fff"><b style="font-size:20px">OpenWRT MESH CONTROLLER PRO v6.0.0</b><div style="font-size:12px;color:#cbd5e1;margin-top:4px">{html.escape(title)}</div></td></tr>
 <tr><td style="padding:18px 20px"><div style="background:{banner};color:#fff;border-radius:10px;padding:16px 18px"><b style="font-size:19px">{html.escape(result)}</b><div style="font-size:12px;margin-top:5px">{html.escape(_now_text())}</div></div></td></tr>
 <tr><td style="padding:0 20px 18px"><table width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;border:1px solid #e5e7eb;font-size:12px"><tr style="background:#f8fafc"><th style="padding:7px">UZEL</th><th>IP</th><th>STAV</th><th>CPU</th><th>DETAIL</th></tr>{''.join(html_rows)}</table></td></tr>
 <tr><td style="padding:0 20px 20px;color:#334155;font-size:12px">Záloha: <b>{html.escape(str(state.get('backup_id') or '—'))}</b> &nbsp; · &nbsp; iHost CPU: <b>{html.escape(ihost_text)}</b></td></tr>
-<tr><td style="background:#071a2d;padding:12px 20px;color:#cbd5e1;font-size:10px">Persistent Operation Manager v5.0.0</td></tr>
+<tr><td style="background:#071a2d;padding:12px 20px;color:#cbd5e1;font-size:10px">Persistent Operation Manager v6.0.0</td></tr>
 </table></td></tr></table></body></html>'''
         return subject, text_body, html_body
 
@@ -870,7 +870,7 @@ printf 'HOSTNAME=%s\nBOOT_ID=%s\nREVISION=%s\nVERSION=%s\nUPTIME=%s\nOVERLAY=%s\
                 "source": source,
             })
             self._save_locked()
-        self._log(f"START v5.0.0: {kind} ({'automaticky' if automatic else source}).")
+        self._log(f"START v6.0.0: {kind} ({'automaticky' if automatic else source}).")
         if not self._start_thread(kind, resume=False):
             return False, "Worker se nepodařilo spustit."
         return True, "Operace spuštěna."

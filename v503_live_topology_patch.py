@@ -34,8 +34,8 @@ html = re.sub(
     '', html, flags=re.I,
 )
 
-css_tag = '<link rel="stylesheet" href="/static/v503_live_topology.css?v=5.0.7">'
-js_tag = '<script src="/static/v503_live_topology.js?v=5.0.7"></script>'
+css_tag = '<link rel="stylesheet" href="/static/v503_live_topology.css?v=6.0.0">'
+js_tag = '<script src="/static/v503_live_topology.js?v=6.0.0"></script>'
 
 html = re.sub(
     r'<link\s+[^>]*href=["\']/static/v503_live_topology\.css\?v=[^"\']+["\'][^>]*>',
@@ -58,11 +58,11 @@ if js_tag not in html:
 # Cache bust Operation Manageru.
 html = re.sub(
     r'(<link\s+[^>]*href=["\']/static/v500_operation\.css\?v=)[^"\']+(["\'][^>]*>)',
-    r'\g<1>5.0.7\2', html, flags=re.I,
+    r'\g<1>6.0.0\2', html, flags=re.I,
 )
 html = re.sub(
     r'(<script\s+[^>]*src=["\']/static/v500_operation\.js\?v=)[^"\']+(["\'][^>]*></script>)',
-    r'\g<1>5.0.7\2', html, flags=re.I,
+    r'\g<1>6.0.0\2', html, flags=re.I,
 )
 
 INDEX.write_text(html, encoding="utf-8")

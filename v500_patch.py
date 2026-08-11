@@ -54,8 +54,8 @@ if OWUT.exists():
 
 # 3) Frontend – pouze doplnění JS/CSS, žádné přestavění dashboardu.
 html = INDEX.read_text(encoding="utf-8")
-css_tag = '<link rel="stylesheet" href="/static/v500_operation.css?v=5.0.3">'
-js_tag = '<script src="/static/v500_operation.js?v=5.0.3"></script>'
+css_tag = '<link rel="stylesheet" href="/static/v500_operation.css?v=6.0.0">'
+js_tag = '<script src="/static/v500_operation.js?v=6.0.0"></script>'
 
 html = re.sub(r'<link\s+[^>]*href=["\']/static/v500_operation\.css\?v=[^"\']+["\'][^>]*>', css_tag, html)
 html = re.sub(r'<script\s+[^>]*src=["\']/static/v500_operation\.js\?v=[^"\']+["\'][^>]*></script>', js_tag, html)

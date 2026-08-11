@@ -87,7 +87,7 @@
     card.className = 'v500-operation-card';
     card.innerHTML = `
       <div class="v500-op-head">
-        <div><b>OPERATION MANAGER</b><span class="v500-version">v5.0.2</span></div>
+        <div><b>OPERATION MANAGER</b><span class="v500-version">v6.0.0</span></div>
         <div class="v500-op-actions">
           <button id="v500ResumeBtn" type="button">POKRAČOVAT</button>
           <button id="v500CancelBtn" type="button">ZASTAVIT</button>

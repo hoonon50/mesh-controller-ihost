@@ -1,0 +1,12 @@
+/* OpenWRT MESH CONTROLLER PRO v5.0.0 – persistent operation manager */
+.v500-operation-card{margin-top:9px;padding:9px 10px;border:1px solid rgba(255,255,255,.10);border-radius:9px;background:rgba(10,13,17,.38);box-sizing:border-box;font-variant-numeric:tabular-nums}
+.v500-op-head,.v500-op-status{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.v500-op-head b{font-size:11px;letter-spacing:.035em}.v500-version{margin-left:7px;font-size:9px;opacity:.55}
+.v500-op-actions{display:flex;gap:5px}.v500-op-actions button{height:24px;padding:0 8px;border:1px solid rgba(255,255,255,.12);border-radius:6px;background:rgba(255,255,255,.06);color:inherit;font-size:8px;font-weight:800;cursor:pointer}
+#v500ResumeBtn{color:#55dc98}#v500CancelBtn{color:#ff6575}
+.v500-op-status{margin-top:7px;font-size:9px;font-weight:800;opacity:.78}.v500-op-bar{height:7px;margin-top:5px;border-radius:99px;overflow:hidden;background:rgba(255,255,255,.07)}.v500-op-bar i{display:block;height:100%;width:0;background:#45c8e8;border-radius:99px;transition:width .35s}
+.v500-operation-card[data-status="done"] .v500-op-bar i{background:#39d98a}.v500-operation-card[data-status="error"] .v500-op-bar i,.v500-operation-card[data-status="paused"] .v500-op-bar i{background:#ff596b}
+.v500-op-message{margin:6px 0;font-size:9px;min-height:12px;opacity:.65;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v500-op-nodes{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}.v500-node{min-width:0;padding:5px 6px;border:1px solid rgba(255,255,255,.08);border-radius:6px;background:rgba(255,255,255,.035)}.v500-node b,.v500-node span,.v500-node em{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.v500-node b{font-size:9px}.v500-node span{font-size:7px;opacity:.5;margin-top:1px}.v500-node em{font-size:7px;font-style:normal;font-weight:800;margin-top:3px;opacity:.78}
+.v500-node-done em,.v500-node-online em,.v500-node-no_update em{color:#55dc98}.v500-node-error em,.v500-node-paused em{color:#ff6575}.v500-node-waiting_online em,.v500-node-waiting_offline em,.v500-node-upgrading em{color:#f3ba4b}
+@media(max-width:900px){.v500-op-nodes{grid-template-columns:repeat(2,minmax(0,1fr))}}

@@ -442,12 +442,18 @@
       cluster.appendChild(dataTile);
     }
 
+    // Horní dlaždice nesmí nikdy zůstat skryté logikou spodní summary lišty.
+    dataTile.classList.remove('v605-summary-hidden');
+    dataTile.style.removeProperty('display');
+
     let refreshTile = document.getElementById('v605RefreshTile');
     if (!refreshTile) {
       refreshTile = makeHeaderStatTile('v605RefreshTile', 'OBNOVENO');
       refreshTile.title = 'Čas posledního živého vzorku topologie';
       cluster.appendChild(refreshTile);
     }
+    refreshTile.classList.remove('v605-summary-hidden');
+    refreshTile.style.removeProperty('display');
 
     // Pevné pořadí: title/subtitle | iHOST | DATA | OBNOVENO.
     cluster.appendChild(ihost);
@@ -457,12 +463,14 @@
     return {dataTile, refreshTile};
   }
 
-  function updateHeaderAuxTiles(clock) {
+  function updateHeaderAuxTiles(clock, dataDir) {
     const tiles = mountHeaderAuxTiles();
     if (!tiles) return;
     const dataValue = tiles.dataTile.querySelector('.v605-header-stat-value');
     const refreshValue = tiles.refreshTile.querySelector('.v605-header-stat-value');
-    if (dataValue) dataValue.textContent = legacyDataValue();
+    // Stabilní backendový zdroj. DATA už není závislé na tom, zda původní
+    // summary dlaždice právě existuje nebo ji starý dashboard přepisuje.
+    if (dataValue) dataValue.textContent = String(dataDir || '/data');
     if (refreshValue) refreshValue.textContent = clock || '—';
   }
 
@@ -548,6 +556,34 @@
     return !!leaf;
   }
 
+  function findMetricInside(container, labels) {
+    if (!container) return null;
+    const wanted = labels.map(v => String(v).trim().toUpperCase());
+    const leaves = Array.from(container.querySelectorAll('*')).filter(el => {
+      if (el.children.length) return false;
+      return wanted.includes((el.textContent || '').trim().toUpperCase());
+    });
+    for (const label of leaves) {
+      let box = label.parentElement;
+      for (let i = 0; box && box !== container.parentElement && i < 5; i += 1, box = box.parentElement) {
+        if (!container.contains(box)) break;
+        const r = box.getBoundingClientRect();
+        if (r.width >= 80 && r.width <= 430 && r.height >= 38 && r.height <= 120) {
+          const vals = Array.from(box.querySelectorAll('*')).filter(el => {
+            if (el.children.length) return false;
+            const txt = (el.textContent || '').trim();
+            if (!txt || wanted.includes(txt.toUpperCase()) || txt.length > 40) return false;
+            const fs = parseFloat(getComputedStyle(el).fontSize || '0');
+            return fs >= 11;
+          });
+          vals.sort((a, b) => parseFloat(getComputedStyle(b).fontSize || '0') - parseFloat(getComputedStyle(a).fontSize || '0'));
+          return {box, leaf: vals[0] || null, label};
+        }
+      }
+    }
+    return null;
+  }
+
   function applySummaryLayout() {
     const keepSpecs = [
       ['ONLINE ROUTERY'],
@@ -569,27 +605,52 @@
       if (found && found.box && !keepBoxes.includes(found.box)) keepBoxes.push(found.box);
     }
 
-    const dataFound = findMetricByLabels(['ZÁLOHY']) || findMetricByLabels(['DATA', '/DATA', '/DATA/']);
-    if (dataFound) {
-      legacyDataLeaf = dataFound.leaf;
+    // Nejdřív jednoznačně určíme SPODNÍ summary lištu podle šesti metrik.
+    // Teprve uvnitř ní hledáme ZÁLOHY(/data) a OBNOVENO. Tím nemůže být
+    // omylem skryta stejnojmenná NOVÁ horní dlaždice.
+    const parents = keepBoxes.map(box => box.parentElement).filter(Boolean);
+    const parent = parents.length && parents.every(p => p === parents[0]) ? parents[0] : null;
+    if (!parent) return;
+
+    let dataFound = findMetricInside(parent, ['ZÁLOHY']);
+    if (!dataFound) dataFound = findMetricInside(parent, ['DATA']);
+    if (!dataFound) {
+      const dataLeaf = Array.from(parent.querySelectorAll('*')).find(el => !el.children.length && (el.textContent || '').trim() === '/data');
+      if (dataLeaf) {
+        let box = dataLeaf.parentElement;
+        for (let i = 0; box && box !== parent && i < 5; i += 1, box = box.parentElement) {
+          const r = box.getBoundingClientRect();
+          if (r.width >= 80 && r.width <= 430 && r.height >= 38 && r.height <= 120) {
+            dataFound = {box, leaf: dataLeaf};
+            break;
+          }
+        }
+      }
+    }
+    if (dataFound && dataFound.box) {
+      legacyDataLeaf = dataFound.leaf || legacyDataLeaf;
       legacyDataBox = dataFound.box;
       legacyDataBox.classList.add('v605-summary-hidden');
-    } else {
-      // Pokud label ZÁLOHY není textový leaf, použij box nalezený přes hodnotu /data.
-      legacyDataValue();
-      if (legacyDataBox) legacyDataBox.classList.add('v605-summary-hidden');
     }
-    const refreshFound = findMetricByLabels(['OBNOVENO']);
-    if (refreshFound) {
+
+    const refreshFound = findMetricInside(parent, ['OBNOVENO']);
+    if (refreshFound && refreshFound.box) {
       legacyRefreshBox = refreshFound.box;
       legacyRefreshBox.classList.add('v605-summary-hidden');
     }
 
-    const parents = keepBoxes.map(box => box.parentElement).filter(Boolean);
-    const parent = parents.length && parents.every(p => p === parents[0]) ? parents[0] : null;
-    if (!parent) return;
     parent.classList.add('v605-summary-bar');
     for (const box of keepBoxes) box.classList.add('v605-summary-metric');
+
+    // Horní trojice musí zůstat vždy viditelná, i kdyby předchozí runtime
+    // omylem přidal summary-hidden class.
+    for (const id of ['v506IhostTile', 'v605DataTile', 'v605RefreshTile']) {
+      const tile = document.getElementById(id);
+      if (tile) {
+        tile.classList.remove('v605-summary-hidden');
+        tile.style.removeProperty('display');
+      }
+    }
   }
 
   function setLiveMetric(labelText, value) {
@@ -628,7 +689,7 @@
     return true;
   }
 
-  function updateMetrics(summary, clock) {
+  function updateMetrics(summary, clock, dataDir) {
     updateLanMetric(summary.lan_clients || 0);
     const values = [
       ['ONLINE ROUTERY', `${summary.online_routers || 0} / ${summary.router_count || 5}`],
@@ -639,7 +700,7 @@
       ['2,4 GHZ', String(summary.clients_24 || 0)]
     ];
     for (const [label, value] of values) setLiveMetric(label, value);
-    updateHeaderAuxTiles(clock || '');
+    updateHeaderAuxTiles(clock || '', dataDir || '/data');
     applySummaryLayout();
     hideLegacyRefreshButton();
   }
@@ -649,13 +710,13 @@
     lastPayload = payload;
     for (const node of (payload.nodes || [])) updateNode(node);
     drawLinks(payload.links || []);
-    updateMetrics(payload.summary || {}, payload.clock || '');
+    updateMetrics(payload.summary || {}, payload.clock || '', payload.data_dir || '/data');
     updateIhost(payload.ihost || {});
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v6.0.7 · ${payload.clock || ''} · #${payload.sequence || 0}`
-        : `LIVE v6.0.4 · čekám na routery`;
+        ? `LIVE v6.0.8 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        : `LIVE v6.0.8 · čekám na routery`;
       status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
     }
   }
@@ -670,7 +731,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v6.0.7 · API nedostupné';
+        status.textContent = 'LIVE v6.0.8 · API nedostupné';
         status.title = String(err);
       }
     } finally {

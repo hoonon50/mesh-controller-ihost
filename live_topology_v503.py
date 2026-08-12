@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import paramiko
 from flask import jsonify
 
-VERSION = "6.0.4"
+VERSION = "6.0.8"
 ROUTERS: List[Tuple[str, str]] = [
     ("192.168.30.1", "ROUTER"),
     ("192.168.30.2", "MESH1"),
@@ -30,6 +30,7 @@ POLL_SECONDS = max(3, int(os.environ.get("MESH_LIVE_TOPOLOGY_POLL", "5")))
 HEALTH_SECONDS = max(POLL_SECONDS, int(os.environ.get("MESH_LIVE_HEALTH_POLL", "15")))
 NODE_FAILURE_GRACE = max(1, int(os.environ.get("MESH_NODE_FAILURE_GRACE", "2")))
 LAN_CLIENT_TTL_SECONDS = max(POLL_SECONDS, int(os.environ.get("MESH_LAN_CLIENT_TTL", "45")))
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 
 try:
     LOCAL_TZ = ZoneInfo(os.environ.get("TZ", "Europe/Prague"))
@@ -822,6 +823,7 @@ printf '__FDB_END__\n'
                 "poll_seconds": POLL_SECONDS,
                 "health_seconds": HEALTH_SECONDS,
                 "sample_duration_ms": self.last_duration_ms,
+                "data_dir": str(DATA_DIR),
                 "ihost": copy.deepcopy(self.ihost),
                 "summary": {
                     "online_routers": online,

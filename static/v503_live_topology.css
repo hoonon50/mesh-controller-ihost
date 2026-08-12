@@ -448,3 +448,19 @@
   .v607-header-tools { flex-wrap: wrap !important; }
   .v607-header-host .wan-usage-wrap { margin-left: 0 !important; }
 }
+
+/* v6.0.8 ---------------------------------------------------------------
+   Horní DATA/OBNOVENO jsou definitivně oddělené od spodního summary.
+   Třída používaná pro skrytí starých summary boxů je nesmí schovat. */
+#v607HeaderTools > #v506IhostTile,
+#v607HeaderTools > #v605DataTile,
+#v607HeaderTools > #v605RefreshTile {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+#v607HeaderTools > #v605DataTile,
+#v607HeaderTools > #v605RefreshTile {
+  height: 50px !important;
+  box-sizing: border-box !important;
+}

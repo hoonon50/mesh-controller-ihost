@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__MESH_V507_LIVE_TOPOLOGY__) return;
-  window.__MESH_V507_LIVE_TOPOLOGY__ = true;
+  if (window.__MESH_V601_LIVE_TOPOLOGY__) return;
+  window.__MESH_V601_LIVE_TOPOLOGY__ = true;
 
   const API = '/api/v503/live-topology';
   const REFRESH_MS = 5000;
@@ -112,7 +112,7 @@
     stage = document.createElement('div');
     stage.className = 'v503-live-stage';
     stage.id = 'v503LiveTopology';
-    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.0 · čekám…</div>';
+    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.1 · čekám…</div>';
     panel.appendChild(stage);
     svg = stage.querySelector('.v503-live-svg');
     status = stage.querySelector('.v503-live-status');
@@ -247,25 +247,48 @@
 
   function findHeaderPlacement() {
     const title = exactTextElement('OpenWRT MESH CONTROLLER PRO');
-    const refresh = exactTextElement('Obnovit stav');
     if (!title) return null;
 
-    // Najdi nejmenší horní kontejner, který obsahuje titul i tlačítko refresh.
     let host = title.parentElement;
-    for (let i = 0; host && i < 6; i += 1, host = host.parentElement) {
+    for (let i = 0; host && i < 7; i += 1, host = host.parentElement) {
       const r = host.getBoundingClientRect();
-      if (r.width > 500 && r.height >= 42 && r.height <= 110 && (!refresh || host.contains(refresh))) {
-        return {host, title, refresh};
+      if (r.width > 500 && r.height >= 42 && r.height <= 115) {
+        let titleBox = title;
+        while (titleBox.parentElement && titleBox.parentElement !== host) {
+          titleBox = titleBox.parentElement;
+        }
+        return {host, title, titleBox};
       }
     }
-    return {host: title.parentElement, title, refresh};
+    return {host: title.parentElement, title, titleBox: title};
+  }
+
+  function hideLegacyRefreshButton() {
+    const text = exactTextElement('Obnovit stav');
+    if (!text) return;
+    let button = text.closest && text.closest('button,a,[role="button"]');
+    if (!button) {
+      let cur = text;
+      for (let i = 0; cur && i < 4; i += 1, cur = cur.parentElement) {
+        const r = cur.getBoundingClientRect();
+        if (r.width >= 60 && r.width <= 180 && r.height >= 24 && r.height <= 60) {
+          button = cur;
+          break;
+        }
+      }
+    }
+    if (button) {
+      button.dataset.v601HiddenRefresh = '1';
+      button.style.setProperty('display', 'none', 'important');
+      button.setAttribute('aria-hidden', 'true');
+      button.setAttribute('tabindex', '-1');
+    }
   }
 
   function mountIhostTile() {
     let tile = document.getElementById('v506IhostTile');
     if (tile && document.body.contains(tile)) return tile;
 
-    // Odstraň případný v5.0.5 iHOST z WAN gridu.
     const old = document.getElementById('v505IhostTile');
     if (old) old.remove();
     const wanWrap = document.querySelector('.wan-usage-wrap');
@@ -287,21 +310,13 @@
         <span>TEMP <b data-v505="temp">—</b></span>
       </div>`;
 
-    // Preferovaný layout: TITUL/SUBTITLE → iHOST → OBNOVIT STAV → ... → WAN.
-    const refresh = place.refresh;
-    if (refresh) {
-      let refreshBox = refresh;
-      while (refreshBox.parentElement && refreshBox.parentElement !== place.host && refreshBox.parentElement.children.length === 1) {
-        refreshBox = refreshBox.parentElement;
-      }
-      if (refreshBox.parentElement === place.host) {
-        place.host.insertBefore(tile, refreshBox);
-      } else {
-        place.host.appendChild(tile);
-      }
+    // v6.0.1: iHOST patří hned za blok názvu/subtitle. Ruční refresh se schová.
+    if (place.titleBox && place.titleBox.parentElement === place.host) {
+      place.host.insertBefore(tile, place.titleBox.nextSibling);
     } else {
       place.host.appendChild(tile);
     }
+    hideLegacyRefreshButton();
     return tile;
   }
 
@@ -319,20 +334,78 @@
     if (temp) temp.textContent = Number.isFinite(tempVal) ? `${tempVal}°C` : '—';
   }
 
-  function updateMetrics(summary, clock) {
-    const values = {
-      'ONLINE ROUTERY': `${summary.online_routers || 0} / ${summary.router_count || 5}`,
-      'MESH SPOJE': String(summary.mesh_links || 0),
-      'KLIENTI': String(summary.clients || 0),
-      '5 GHZ': String(summary.clients_5 || 0),
-      '2.4 GHZ': String(summary.clients_24 || 0),
-      '2,4 GHZ': String(summary.clients_24 || 0),
-      'OBNOVENO': clock || ''
-    };
-    for (const [label, value] of Object.entries(values)) {
-      const leaf = metricLeaf(label);
-      if (leaf) leaf.textContent = value;
+  function metricBoxAndLeaf(labelText) {
+    const label = exactTextElement(labelText);
+    if (!label) return null;
+    let box = label.parentElement;
+    for (let i = 0; box && i < 5; i += 1, box = box.parentElement) {
+      const r = box.getBoundingClientRect();
+      if (r.width >= 100 && r.width <= 420 && r.height >= 42 && r.height <= 110) {
+        const leaves = Array.from(box.querySelectorAll('*')).filter(el => {
+          if (el.children.length) return false;
+          if (el.classList.contains('v601-live-metric-value')) return false;
+          const t = (el.textContent || '').trim();
+          if (!t || t.toUpperCase() === labelText.toUpperCase() || t.length > 30) return false;
+          const fs = parseFloat(getComputedStyle(el).fontSize || '0');
+          return fs >= 13;
+        });
+        if (leaves.length) {
+          leaves.sort((a, b) => parseFloat(getComputedStyle(b).fontSize) - parseFloat(getComputedStyle(a).fontSize));
+          return {box, leaf: leaves[0]};
+        }
+      }
     }
+    return null;
+  }
+
+  function setLiveMetric(labelText, value) {
+    const found = metricBoxAndLeaf(labelText);
+    if (!found) return false;
+    const {box, leaf} = found;
+    box.classList.add('v601-live-metric-box');
+
+    // Starý dashboard může tuto hodnotu dál měnit. Zůstává ale trvale skrytá.
+    leaf.classList.add('v601-legacy-metric-value');
+    leaf.style.setProperty('visibility', 'hidden', 'important');
+
+    let live = box.querySelector(`.v601-live-metric-value[data-label="${CSS.escape(labelText)}"]`);
+    if (!live) {
+      live = document.createElement('span');
+      live.className = 'v601-live-metric-value';
+      live.dataset.label = labelText;
+      live.setAttribute('aria-label', `${labelText} live`);
+      box.appendChild(live);
+    }
+
+    const br = box.getBoundingClientRect();
+    const lr = leaf.getBoundingClientRect();
+    const cs = getComputedStyle(leaf);
+    live.style.left = `${Math.max(0, lr.left - br.left)}px`;
+    live.style.top = `${Math.max(0, lr.top - br.top)}px`;
+    live.style.width = `${Math.max(35, lr.width)}px`;
+    live.style.height = `${Math.max(18, lr.height)}px`;
+    live.style.fontFamily = cs.fontFamily;
+    live.style.fontSize = cs.fontSize;
+    live.style.fontWeight = cs.fontWeight;
+    live.style.lineHeight = cs.lineHeight;
+    live.style.letterSpacing = cs.letterSpacing;
+    live.style.color = cs.color;
+    live.textContent = value;
+    return true;
+  }
+
+  function updateMetrics(summary, clock) {
+    const values = [
+      ['ONLINE ROUTERY', `${summary.online_routers || 0} / ${summary.router_count || 5}`],
+      ['MESH SPOJE', String(summary.mesh_links || 0)],
+      ['KLIENTI', String(summary.clients || 0)],
+      ['5 GHZ', String(summary.clients_5 || 0)],
+      ['2.4 GHZ', String(summary.clients_24 || 0)],
+      ['2,4 GHZ', String(summary.clients_24 || 0)],
+      ['OBNOVENO', clock || '']
+    ];
+    for (const [label, value] of values) setLiveMetric(label, value);
+    hideLegacyRefreshButton();
   }
 
   function render(payload) {
@@ -345,8 +418,8 @@
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v6.0.0 · ${payload.clock || ''} · #${payload.sequence || 0}`
-        : `LIVE v6.0.0 · čekám na routery`;
+        ? `LIVE v6.0.1 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        : `LIVE v6.0.1 · čekám na routery`;
       status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
     }
   }
@@ -361,7 +434,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v6.0.0 · API nedostupné';
+        status.textContent = 'LIVE v6.0.1 · API nedostupné';
         status.title = String(err);
       }
     } finally {

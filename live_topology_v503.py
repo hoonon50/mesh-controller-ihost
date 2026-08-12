@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import paramiko
 from flask import jsonify
 
-VERSION = "6.0.2"
+VERSION = "6.0.3"
 ROUTERS: List[Tuple[str, str]] = [
     ("192.168.30.1", "ROUTER"),
     ("192.168.30.2", "MESH1"),
@@ -114,18 +114,25 @@ def _iface_mac(info: str) -> str:
     return m.group(1).lower() if m else ""
 
 
+def _band_from_freq(freq: Any) -> str:
+    try:
+        value = int(freq)
+    except (TypeError, ValueError):
+        return "?"
+    if 2400 <= value < 3000:
+        return "2.4"
+    if 4900 <= value < 5925:
+        return "5"
+    if value >= 5925:
+        return "6"
+    return "?"
+
+
 def _iface_band(info: str) -> str:
     m = re.search(r"channel\s+\d+\s+\((\d+)\s+MHz\)", info, re.I)
     if not m:
         return "?"
-    freq = int(m.group(1))
-    if 2400 <= freq < 3000:
-        return "2.4"
-    if 4900 <= freq < 5925:
-        return "5"
-    if freq >= 5925:
-        return "6"
-    return "?"
+    return _band_from_freq(m.group(1))
 
 
 def _ethernet_fdb_macs(text: str, wireless_ifnames: set[str]) -> set[str]:
@@ -175,6 +182,7 @@ class LiveTopologyCollector:
                 "wifi_client_macs_24": [],
                 "wifi_client_macs_5": [],
                 "lan_client_macs": [],
+                "_wifi_bss_samples": {},
                 "error": "čekám na první vzorek",
                 "updated_at": "",
             }
@@ -227,7 +235,11 @@ printf '__SYS_END__\n'
 # Klienti AP: hostapd ubus je autoritativní zdroj aktuálně asociovaných STA.
 # DŮLEŽITÉ: chyba ubus dotazu nesmí vypadat jako platný prázdný seznam klientů.
 for OBJ in $(ubus list 'hostapd.*' 2>/dev/null || true); do
+  IF="${OBJ#hostapd.}"
+  FREQ="$(iw dev "$IF" info 2>/dev/null | awk '/channel/ {gsub(/[()]/, "", $3); print $3; exit}')"
   printf '__HOSTAPD_BEGIN__ %s\n' "$OBJ"
+  printf '__HOSTAPD_IFACE__ %s\n' "$IF"
+  printf '__HOSTAPD_FREQ__ %s\n' "$FREQ"
   if DATA="$(ubus call "$OBJ" get_clients 2>/dev/null)"; then
     printf '__HOSTAPD_OK__\n%s\n' "$DATA"
   else
@@ -288,51 +300,101 @@ printf '__FDB_END__\n'
                 "stations": _station_records(stations_text),
             })
 
+        # v6.0.3: klientský stav vedeme po jednotlivých hostapd BSS.
+        # Úspěšný BSS se může okamžitě změnit, i když jiný BSS na témže routeru
+        # v daném vzorku selže. Chyba jednoho AP tak nezmrazí celý router/pásmo.
         wifi24: set[str] = set()
         wifi5: set[str] = set()
         hostapd_objects = 0
         hostapd_valid = 0
         hostapd_failed = 0
+        bss_samples: Dict[str, Dict[str, Any]] = {}
+        iface_by_name = {str(row.get("ifname") or ""): row for row in ifaces}
 
-        # OpenWrt hostapd get_clients vrací asociované klienty a frekvenci BSS.
-        # Platný výsledek může mít clients={} a to opravdu znamená 0 klientů.
-        # Chyba ubus/JSON/frekvence se ale označí jako neplatný Wi-Fi vzorek;
-        # v sample() se pak zachová poslední úspěšný Wi-Fi stav daného uzlu.
         for hm in re.finditer(r"__HOSTAPD_BEGIN__\s+(\S+)\n(.*?)__HOSTAPD_END__", out, re.S):
             hostapd_objects += 1
             obj = hm.group(1)
-            body = hm.group(2).strip()
-            if not body.startswith("__HOSTAPD_OK__"):
+            body = hm.group(2)
+            iface_m = re.search(r"(?m)^__HOSTAPD_IFACE__\s+(\S+)\s*$", body)
+            freq_m = re.search(r"(?m)^__HOSTAPD_FREQ__\s*(\d*)\s*$", body)
+            ifname = iface_m.group(1) if iface_m else (obj.split("hostapd.", 1)[1] if obj.startswith("hostapd.") else "")
+            freq_hint = int(freq_m.group(1)) if freq_m and freq_m.group(1) else 0
+            band = _band_from_freq(freq_hint)
+            if band == "?":
+                band = str((iface_by_name.get(ifname) or {}).get("band") or "?")
+            fallback_macs = sorted(
+                str(row.get("mac") or "").lower()
+                for row in ((iface_by_name.get(ifname) or {}).get("stations") or [])
+                if MAC_RE.match(str(row.get("mac") or "").lower())
+            )
+            sample: Dict[str, Any] = {
+                "object": obj,
+                "ifname": ifname,
+                "band": band,
+                "ok": False,
+                "macs": [],
+                "fallback_macs": fallback_macs,
+                "source": "hostapd-error",
+            }
+
+            ok_marker = re.search(r"(?m)^__HOSTAPD_OK__\s*$", body)
+            if ok_marker:
+                json_text = body[ok_marker.end():].strip()
+                try:
+                    payload = json.loads(json_text)
+                except json.JSONDecodeError:
+                    payload = None
+                if isinstance(payload, dict) and isinstance(payload.get("clients"), dict):
+                    payload_band = _band_from_freq(payload.get("freq") or freq_hint)
+                    if payload_band != "?":
+                        sample["band"] = payload_band
+                    macs: set[str] = set()
+                    for mac, info in payload["clients"].items():
+                        mac_s = str(mac).lower()
+                        if not MAC_RE.match(mac_s):
+                            continue
+                        if isinstance(info, dict) and info.get("assoc") is False:
+                            continue
+                        macs.add(mac_s)
+                    if sample["band"] in {"2.4", "5", "6"}:
+                        sample["ok"] = True
+                        sample["macs"] = sorted(macs)
+                        sample["source"] = "hostapd"
+                        hostapd_valid += 1
+                    else:
+                        hostapd_failed += 1
+                else:
+                    hostapd_failed += 1
+            else:
                 hostapd_failed += 1
+
+            bss_samples[obj] = sample
+
+        # Pokud `ubus list hostapd.*` některý AP objekt v tomto jediném vzorku
+        # vůbec nevrátí, vytvoříme pro něj neplatný BSS vzorek podle `iw dev`.
+        # sample() pak použije cache právě tohoto BSS, nikoli celého routeru.
+        for iface in ifaces:
+            if iface.get("type") != "ap":
                 continue
-            body = body[len("__HOSTAPD_OK__"):].lstrip("\n")
-            try:
-                payload = json.loads(body)
-            except json.JSONDecodeError:
-                hostapd_failed += 1
+            ifname = str(iface.get("ifname") or "")
+            obj = f"hostapd.{ifname}"
+            if obj in bss_samples:
                 continue
-            if not isinstance(payload, dict) or "clients" not in payload:
-                hostapd_failed += 1
-                continue
-            try:
-                freq = int(payload.get("freq") or 0)
-            except (TypeError, ValueError):
-                freq = 0
-            target = wifi24 if 2400 <= freq < 3000 else wifi5 if 4900 <= freq < 5925 else None
-            clients_obj = payload.get("clients")
-            if target is None or not isinstance(clients_obj, dict):
-                hostapd_failed += 1
-                continue
-            hostapd_valid += 1
-            for mac, info in clients_obj.items():
-                mac_s = str(mac).lower()
-                if not MAC_RE.match(mac_s):
-                    continue
-                # assoc je rozhodující. Pro případ staršího hostapd bez tohoto
-                # pole přijmeme záznam, ale explicitní assoc=false vždy vyřadíme.
-                if isinstance(info, dict) and info.get("assoc") is False:
-                    continue
-                target.add(mac_s)
+            fallback_macs = sorted(
+                str(row.get("mac") or "").lower()
+                for row in (iface.get("stations") or [])
+                if MAC_RE.match(str(row.get("mac") or "").lower())
+            )
+            bss_samples[obj] = {
+                "object": obj,
+                "ifname": ifname,
+                "band": str(iface.get("band") or "?"),
+                "ok": False,
+                "macs": [],
+                "fallback_macs": fallback_macs,
+                "source": "hostapd-missing",
+            }
+            hostapd_failed += 1
 
         mesh_ifaces: List[Dict[str, str]] = []
         mesh_peers: List[Dict[str, Any]] = []
@@ -342,12 +404,7 @@ printf '__FDB_END__\n'
             typ = iface["type"]
             stations = iface["stations"]
             if typ == "ap":
-                # Fallback pouze při prvním startu / úplné absenci hostapd ubus.
-                # Při dočasné chybě hostapd později zachováme poslední dobrý stav.
-                if hostapd_objects == 0:
-                    target = wifi24 if iface["band"] == "2.4" else wifi5 if iface["band"] == "5" else None
-                    if target is not None:
-                        target.update(row["mac"] for row in stations if MAC_RE.match(row["mac"]))
+                pass
             elif "mesh" in typ:
                 if iface["mac"]:
                     mesh_ifaces.append({"ifname": iface["ifname"], "mac": iface["mac"]})
@@ -393,7 +450,8 @@ printf '__FDB_END__\n'
             "wifi_client_macs_24": sorted(wifi24),
             "wifi_client_macs_5": sorted(wifi5),
             "lan_client_macs": sorted(lan_macs),
-            "_wifi_sample_ok": (hostapd_objects > 0 and hostapd_failed == 0 and hostapd_valid == hostapd_objects) or hostapd_objects == 0,
+            "_wifi_bss_samples": bss_samples,
+            "_wifi_sample_ok": hostapd_failed == 0 and bool(bss_samples),
             "_hostapd_objects": hostapd_objects,
             "_hostapd_valid": hostapd_valid,
             "_hostapd_failed": hostapd_failed,
@@ -554,34 +612,69 @@ printf '__FDB_END__\n'
                             "wifi_client_macs_24": [],
                             "wifi_client_macs_5": [],
                             "lan_client_macs": [],
+                            "_wifi_bss_samples": {},
                             "_sample_ok": False,
                             "error": str(exc),
                             "updated_at": _now_text(),
                         }
 
-        # v6.0.2: hostapd může jednotlivý ubus get_clients občas krátce odmítnout.
-        # Takový technický výpadek NESMÍ být interpretován jako 0 klientů.
-        # Zachováme poslední úspěšné Wi-Fi MAC daného uzlu pouze při chybě zdroje.
-        # Platný clients={} se naopak propíše okamžitě jako skutečných 0 klientů.
+        # v6.0.3: hostapd fallback je PO JEDNOTLIVÝCH BSS/AP.
+        # Úspěšný 5GHz BSS se tedy aktualizuje ihned i v případě, že ve stejném
+        # 5s vzorku selže jiný 2.4GHz BSS (a naopak).
         for ip, node in fetched.items():
-            if not node.get("online") or node.get("_wifi_sample_ok", True):
+            if not node.get("online"):
                 continue
             old = self.nodes.get(ip, {})
-            if not old.get("online"):
-                continue
-            old24 = set(str(m).lower() for m in (old.get("wifi_client_macs_24") or []))
-            old5 = set(str(m).lower() for m in (old.get("wifi_client_macs_5") or []))
-            lan = set(str(m).lower() for m in (node.get("lan_client_macs") or []))
-            lan.difference_update(old24)
-            lan.difference_update(old5)
-            node["wifi_client_macs_24"] = sorted(old24)
-            node["wifi_client_macs_5"] = sorted(old5)
+            old_bss = old.get("_wifi_bss_samples") if isinstance(old.get("_wifi_bss_samples"), dict) else {}
+            current_bss = node.get("_wifi_bss_samples") if isinstance(node.get("_wifi_bss_samples"), dict) else {}
+            merged_bss: Dict[str, Dict[str, Any]] = {}
+            stale_bss: List[str] = []
+
+            for key, raw_sample in current_bss.items():
+                sample = copy.deepcopy(raw_sample) if isinstance(raw_sample, dict) else {}
+                macs: set[str]
+                if sample.get("ok"):
+                    macs = {str(m).lower() for m in (sample.get("macs") or []) if MAC_RE.match(str(m).lower())}
+                    sample["source"] = "hostapd"
+                    sample["stale"] = False
+                else:
+                    previous = old_bss.get(key) if isinstance(old_bss, dict) else None
+                    previous_macs = (previous or {}).get("macs") if isinstance(previous, dict) else None
+                    if previous_macs is not None:
+                        macs = {str(m).lower() for m in previous_macs if MAC_RE.match(str(m).lower())}
+                        sample["source"] = "bss-cache"
+                    else:
+                        macs = {str(m).lower() for m in (sample.get("fallback_macs") or []) if MAC_RE.match(str(m).lower())}
+                        sample["source"] = "iw-first-sample"
+                    sample["stale"] = True
+                    stale_bss.append(str(key))
+                sample["macs"] = sorted(macs)
+                sample.pop("fallback_macs", None)
+                merged_bss[str(key)] = sample
+
+            wifi24: set[str] = set()
+            wifi5: set[str] = set()
+            for sample in merged_bss.values():
+                band = str(sample.get("band") or "?")
+                macs = {str(m).lower() for m in (sample.get("macs") or []) if MAC_RE.match(str(m).lower())}
+                if band == "2.4":
+                    wifi24.update(macs)
+                elif band == "5":
+                    wifi5.update(macs)
+
+            lan = {str(m).lower() for m in (node.get("lan_client_macs") or []) if MAC_RE.match(str(m).lower())}
+            lan.difference_update(wifi24)
+            lan.difference_update(wifi5)
+            node["_wifi_bss_samples"] = merged_bss
+            node["wifi_client_macs_24"] = sorted(wifi24)
+            node["wifi_client_macs_5"] = sorted(wifi5)
             node["lan_client_macs"] = sorted(lan)
-            node["clients_24"] = len(old24)
-            node["clients_5"] = len(old5)
+            node["clients_24"] = len(wifi24)
+            node["clients_5"] = len(wifi5)
             node["lan_clients"] = len(lan)
-            node["clients"] = len(old24 | old5 | lan)
-            node["wifi_stale"] = True
+            node["clients"] = len(wifi24 | wifi5 | lan)
+            node["wifi_stale"] = bool(stale_bss)
+            node["wifi_stale_bss"] = stale_bss
 
         # CPU/uptime publikujeme nejvýše každých HEALTH_SECONDS. Samotné SSH je už
         # otevřené kvůli topologii, takže to nepřidává další spojení na router.
@@ -637,7 +730,7 @@ printf '__FDB_END__\n'
             for ip, _name in ROUTERS:
                 n = copy.deepcopy(nodes[ip])
                 # Interní seznamy MAC nejsou potřeba v browseru.
-                for key in ("mesh_ifaces", "mesh_peers", "wifi_client_macs_24", "wifi_client_macs_5", "lan_client_macs", "_sample_ok", "_wifi_sample_ok", "_hostapd_objects", "_hostapd_valid", "_hostapd_failed"):
+                for key in ("mesh_ifaces", "mesh_peers", "wifi_client_macs_24", "wifi_client_macs_5", "lan_client_macs", "_wifi_bss_samples", "_sample_ok", "_wifi_sample_ok", "_hostapd_objects", "_hostapd_valid", "_hostapd_failed"):
                     n.pop(key, None)
                 public_nodes.append(n)
 

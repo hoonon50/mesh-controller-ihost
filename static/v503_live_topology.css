@@ -351,3 +351,52 @@
 @media (max-width: 980px) {
   .v605-summary-bar { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
 }
+
+/* v6.0.6 ---------------------------------------------------------------
+   Přesné umístění horních dlaždic:
+   [název + SONOFF subtitle] [iHOST] [DATA] [OBNOVENO] .... [DOWNLOAD] [UPLOAD]
+   Všechny tři stavové dlaždice jsou uvnitř stejného levého header clusteru. */
+.v606-header-host {
+  display: flex !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important;
+  gap: 10px !important;
+  width: 100% !important;
+}
+.v606-header-cluster {
+  display: flex !important;
+  align-items: center !important;
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+  gap: 8px !important;
+}
+.v606-header-cluster > [data-v606-titlebox="1"] {
+  flex: 0 0 auto !important;
+  margin-right: 4px !important;
+}
+.v606-header-cluster .v506-ihost-tile,
+.v606-header-cluster .v605-header-stat-tile {
+  align-self: center !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+/* DATA a OBNOVENO vizuálně přesně jako iHOST – stejný rámeček, výška a pozadí. */
+.v606-header-cluster .v605-header-stat-tile {
+  height: 50px !important;
+  border: 1px solid rgba(255,255,255,.12) !important;
+  border-radius: 9px !important;
+  background: rgba(255,255,255,.055) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 4px 12px rgba(0,0,0,.14) !important;
+}
+.v606-header-cluster #v605DataTile { width: 112px !important; }
+.v606-header-cluster #v605RefreshTile { width: 126px !important; }
+/* WAN dvojice zůstává napravo a vytlačí se na pravý okraj. */
+.v606-header-host .wan-usage-wrap {
+  margin-left: auto !important;
+  flex: 0 0 auto !important;
+}
+@media (max-width: 1220px) {
+  .v606-header-host { flex-wrap: wrap !important; }
+  .v606-header-cluster { flex-wrap: wrap !important; }
+  .v606-header-host .wan-usage-wrap { margin-left: 0 !important; }
+}

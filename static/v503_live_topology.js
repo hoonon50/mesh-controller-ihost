@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__MESH_V605_LIVE_TOPOLOGY__) return;
-  window.__MESH_V605_LIVE_TOPOLOGY__ = true;
+  if (window.__MESH_V606_LIVE_TOPOLOGY__) return;
+  window.__MESH_V606_LIVE_TOPOLOGY__ = true;
 
   const API = '/api/v503/live-topology';
   const REFRESH_MS = 5000;
@@ -115,7 +115,7 @@
     stage = document.createElement('div');
     stage.className = 'v503-live-stage';
     stage.id = 'v503LiveTopology';
-    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.5 · čekám…</div>';
+    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.6 · čekám…</div>';
     panel.appendChild(stage);
     svg = stage.querySelector('.v503-live-svg');
     status = stage.querySelector('.v503-live-status');
@@ -252,6 +252,14 @@
     const title = exactTextElement('OpenWRT MESH CONTROLLER PRO');
     if (!title) return null;
 
+    // v6.0.6: po prvním mountu už máme vlastní levý header cluster. Vždy
+    // vracíme jeho skutečného rodiče, aby další refresh nevnořoval dlaždice.
+    const existingCluster = document.getElementById('v606HeaderCluster');
+    if (existingCluster && existingCluster.parentElement) {
+      const marked = existingCluster.querySelector('[data-v606-titlebox="1"]');
+      return {host: existingCluster.parentElement, title, titleBox: marked || title, cluster: existingCluster};
+    }
+
     let host = title.parentElement;
     for (let i = 0; host && i < 7; i += 1, host = host.parentElement) {
       const r = host.getBoundingClientRect();
@@ -260,10 +268,39 @@
         while (titleBox.parentElement && titleBox.parentElement !== host) {
           titleBox = titleBox.parentElement;
         }
-        return {host, title, titleBox};
+        return {host, title, titleBox, cluster: null};
       }
     }
-    return {host: title.parentElement, title, titleBox: title};
+    return {host: title.parentElement, title, titleBox: title, cluster: null};
+  }
+
+  function ensureHeaderCluster() {
+    const place = findHeaderPlacement();
+    if (!place || !place.host) return null;
+
+    let cluster = document.getElementById('v606HeaderCluster');
+    if (!cluster) {
+      cluster = document.createElement('div');
+      cluster.id = 'v606HeaderCluster';
+      cluster.className = 'v606-header-cluster';
+
+      const titleBox = place.titleBox || place.title;
+      if (titleBox && titleBox.parentElement === place.host) {
+        titleBox.dataset.v606Titlebox = '1';
+        place.host.insertBefore(cluster, titleBox);
+        cluster.appendChild(titleBox);
+      } else {
+        place.host.insertBefore(cluster, place.host.firstChild);
+        if (titleBox) {
+          titleBox.dataset.v606Titlebox = '1';
+          cluster.appendChild(titleBox);
+        }
+      }
+    }
+
+    place.host.classList.add('v506-header-host', 'v606-header-host');
+    cluster.classList.add('v606-header-cluster');
+    return {host: place.host, cluster};
   }
 
   function hideLegacyRefreshButton() {
@@ -297,9 +334,8 @@
     const wanWrap = document.querySelector('.wan-usage-wrap');
     if (wanWrap) wanWrap.classList.remove('v505-with-ihost');
 
-    const place = findHeaderPlacement();
-    if (!place || !place.host) return null;
-    place.host.classList.add('v506-header-host');
+    const place = ensureHeaderCluster();
+    if (!place || !place.host || !place.cluster) return null;
 
     tile = document.createElement('div');
     tile.id = 'v506IhostTile';
@@ -313,12 +349,8 @@
         <span>TEMP <b data-v505="temp">—</b></span>
       </div>`;
 
-    // v6.0.1: iHOST patří hned za blok názvu/subtitle. Ruční refresh se schová.
-    if (place.titleBox && place.titleBox.parentElement === place.host) {
-      place.host.insertBefore(tile, place.titleBox.nextSibling);
-    } else {
-      place.host.appendChild(tile);
-    }
+    // v6.0.6: iHOST je vždy ve stejném horním clusteru jako název/subtitle.
+    place.cluster.appendChild(tile);
     hideLegacyRefreshButton();
     return tile;
   }
@@ -370,24 +402,33 @@
 
   function mountHeaderAuxTiles() {
     const ihost = mountIhostTile();
-    if (!ihost || !ihost.parentElement) return null;
-    const host = ihost.parentElement;
+    const place = ensureHeaderCluster();
+    if (!ihost || !place || !place.cluster) return null;
+    const host = place.host;
+    const cluster = place.cluster;
+
+    // Pokud je z cache některá dlaždice mimo správný cluster, přesuneme ji sem.
+    if (ihost.parentElement !== cluster) cluster.appendChild(ihost);
 
     let dataTile = document.getElementById('v605DataTile');
     if (!dataTile) {
       dataTile = makeHeaderStatTile('v605DataTile', 'DATA');
       dataTile.title = 'Stávající hodnota DATA přesunutá z dolní souhrnné lišty';
-      ihost.insertAdjacentElement('afterend', dataTile);
+      cluster.appendChild(dataTile);
     }
 
     let refreshTile = document.getElementById('v605RefreshTile');
     if (!refreshTile) {
       refreshTile = makeHeaderStatTile('v605RefreshTile', 'OBNOVENO');
       refreshTile.title = 'Čas posledního živého vzorku topologie';
-      dataTile.insertAdjacentElement('afterend', refreshTile);
+      cluster.appendChild(refreshTile);
     }
 
-    host.classList.add('v605-header-layout');
+    // Pevné pořadí: title/subtitle | iHOST | DATA | OBNOVENO.
+    cluster.appendChild(ihost);
+    cluster.appendChild(dataTile);
+    cluster.appendChild(refreshTile);
+    host.classList.add('v605-header-layout', 'v606-header-host');
     return {dataTile, refreshTile};
   }
 
@@ -584,7 +625,7 @@
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v6.0.5 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        ? `LIVE v6.0.6 · ${payload.clock || ''} · #${payload.sequence || 0}`
         : `LIVE v6.0.4 · čekám na routery`;
       status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
     }
@@ -600,7 +641,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v6.0.5 · API nedostupné';
+        status.textContent = 'LIVE v6.0.6 · API nedostupné';
         status.title = String(err);
       }
     } finally {

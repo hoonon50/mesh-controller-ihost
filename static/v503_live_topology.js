@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__MESH_V604_LIVE_TOPOLOGY__) return;
-  window.__MESH_V604_LIVE_TOPOLOGY__ = true;
+  if (window.__MESH_V605_LIVE_TOPOLOGY__) return;
+  window.__MESH_V605_LIVE_TOPOLOGY__ = true;
 
   const API = '/api/v503/live-topology';
   const REFRESH_MS = 5000;
@@ -27,6 +27,9 @@
   let lastPayload = null;
   let polling = false;
   let resizeObserver = null;
+  let legacyDataLeaf = null;
+  let legacyDataBox = null;
+  let legacyRefreshBox = null;
 
   function exactTextElement(text) {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -112,7 +115,7 @@
     stage = document.createElement('div');
     stage.className = 'v503-live-stage';
     stage.id = 'v503LiveTopology';
-    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.4 · čekám…</div>';
+    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.5 · čekám…</div>';
     panel.appendChild(stage);
     svg = stage.querySelector('.v503-live-svg');
     status = stage.querySelector('.v503-live-status');
@@ -334,6 +337,69 @@
     if (temp) temp.textContent = Number.isFinite(tempVal) ? `${tempVal}°C` : '—';
   }
 
+  function findMetricByLabels(labels) {
+    for (const label of labels) {
+      const found = metricBoxAndLeaf(label);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function legacyDataValue() {
+    if (legacyDataLeaf && document.body.contains(legacyDataLeaf)) {
+      return (legacyDataLeaf.textContent || '').trim() || '—';
+    }
+    const found = findMetricByLabels(['DATA', '/DATA', '/DATA/']);
+    if (found) {
+      legacyDataLeaf = found.leaf;
+      legacyDataBox = found.box;
+      return (found.leaf.textContent || '').trim() || '—';
+    }
+    return '—';
+  }
+
+  function makeHeaderStatTile(id, title) {
+    const tile = document.createElement('div');
+    tile.id = id;
+    tile.className = 'v605-header-stat-tile';
+    tile.innerHTML = `
+      <div class="v605-header-stat-head">${title}</div>
+      <div class="v605-header-stat-value">—</div>`;
+    return tile;
+  }
+
+  function mountHeaderAuxTiles() {
+    const ihost = mountIhostTile();
+    if (!ihost || !ihost.parentElement) return null;
+    const host = ihost.parentElement;
+
+    let dataTile = document.getElementById('v605DataTile');
+    if (!dataTile) {
+      dataTile = makeHeaderStatTile('v605DataTile', 'DATA');
+      dataTile.title = 'Stávající hodnota DATA přesunutá z dolní souhrnné lišty';
+      ihost.insertAdjacentElement('afterend', dataTile);
+    }
+
+    let refreshTile = document.getElementById('v605RefreshTile');
+    if (!refreshTile) {
+      refreshTile = makeHeaderStatTile('v605RefreshTile', 'OBNOVENO');
+      refreshTile.title = 'Čas posledního živého vzorku topologie';
+      dataTile.insertAdjacentElement('afterend', refreshTile);
+    }
+
+    host.classList.add('v605-header-layout');
+    return {dataTile, refreshTile};
+  }
+
+  function updateHeaderAuxTiles(clock) {
+    const tiles = mountHeaderAuxTiles();
+    if (!tiles) return;
+    const dataValue = tiles.dataTile.querySelector('.v605-header-stat-value');
+    const refreshValue = tiles.refreshTile.querySelector('.v605-header-stat-value');
+    if (dataValue) dataValue.textContent = legacyDataValue();
+    if (refreshValue) refreshValue.textContent = clock || '—';
+  }
+
   function metricBoxAndLeaf(labelText) {
     const label = exactTextElement(labelText);
     if (!label) return null;
@@ -416,6 +482,46 @@
     return !!leaf;
   }
 
+  function applySummaryLayout() {
+    const keepSpecs = [
+      ['ONLINE ROUTERY'],
+      ['MESH SPOJE'],
+      ['KLIENTI'],
+      ['5 GHZ'],
+      ['2.4 GHZ', '2,4 GHZ'],
+      ['LAN']
+    ];
+    const keepBoxes = [];
+    for (const labels of keepSpecs) {
+      let found = null;
+      if (labels[0] === 'LAN') {
+        const lan = ensureLanMetricTile();
+        if (lan) found = {box: lan};
+      } else {
+        found = findMetricByLabels(labels);
+      }
+      if (found && found.box && !keepBoxes.includes(found.box)) keepBoxes.push(found.box);
+    }
+
+    const dataFound = findMetricByLabels(['DATA', '/DATA', '/DATA/']);
+    if (dataFound) {
+      legacyDataLeaf = dataFound.leaf;
+      legacyDataBox = dataFound.box;
+      legacyDataBox.classList.add('v605-summary-hidden');
+    }
+    const refreshFound = findMetricByLabels(['OBNOVENO']);
+    if (refreshFound) {
+      legacyRefreshBox = refreshFound.box;
+      legacyRefreshBox.classList.add('v605-summary-hidden');
+    }
+
+    const parents = keepBoxes.map(box => box.parentElement).filter(Boolean);
+    const parent = parents.length && parents.every(p => p === parents[0]) ? parents[0] : null;
+    if (!parent) return;
+    parent.classList.add('v605-summary-bar');
+    for (const box of keepBoxes) box.classList.add('v605-summary-metric');
+  }
+
   function setLiveMetric(labelText, value) {
     const found = metricBoxAndLeaf(labelText);
     if (!found) return false;
@@ -460,10 +566,11 @@
       ['KLIENTI', String(summary.clients || 0)],
       ['5 GHZ', String(summary.clients_5 || 0)],
       ['2.4 GHZ', String(summary.clients_24 || 0)],
-      ['2,4 GHZ', String(summary.clients_24 || 0)],
-      ['OBNOVENO', clock || '']
+      ['2,4 GHZ', String(summary.clients_24 || 0)]
     ];
     for (const [label, value] of values) setLiveMetric(label, value);
+    updateHeaderAuxTiles(clock || '');
+    applySummaryLayout();
     hideLegacyRefreshButton();
   }
 
@@ -477,7 +584,7 @@
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v6.0.4 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        ? `LIVE v6.0.5 · ${payload.clock || ''} · #${payload.sequence || 0}`
         : `LIVE v6.0.4 · čekám na routery`;
       status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
     }
@@ -493,7 +600,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v6.0.4 · API nedostupné';
+        status.textContent = 'LIVE v6.0.5 · API nedostupné';
         status.title = String(err);
       }
     } finally {

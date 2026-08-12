@@ -275,3 +275,79 @@
 #v604LanMetricValue {
   font-variant-numeric: tabular-nums;
 }
+
+/* v6.0.5 ---------------------------------------------------------------
+   DATA a OBNOVENO se přesouvají z dolní souhrnné lišty vedle iHOST.
+   Zbylých 6 souhrnných dlaždic se rovnoměrně roztáhne přes celou šířku. */
+.v605-header-layout {
+  column-gap: 8px !important;
+}
+.v605-header-stat-tile {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: 122px;
+  height: 50px;
+  padding: 5px 10px 4px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 9px;
+  background: rgba(255,255,255,.055);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 4px 12px rgba(0,0,0,.14);
+  color: #eef2f5;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+#v605RefreshTile { width: 132px; }
+.v605-header-stat-head {
+  margin-bottom: 5px;
+  color: #aab2bd;
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 850;
+  letter-spacing: .07em;
+}
+.v605-header-stat-value {
+  display: flex;
+  align-items: center;
+  height: 23px;
+  color: #eef2f5;
+  font-size: 15px;
+  line-height: 1;
+  font-weight: 850;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.v605-summary-hidden {
+  display: none !important;
+}
+.v605-summary-bar {
+  display: grid !important;
+  grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+  width: 100% !important;
+  align-items: stretch !important;
+}
+.v605-summary-bar > .v605-summary-metric {
+  box-sizing: border-box !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  flex: none !important;
+}
+#v604LanMetricBox.v605-summary-metric {
+  flex: none !important;
+  width: auto !important;
+  min-width: 0 !important;
+}
+
+@media (max-width: 1250px) {
+  .v605-header-stat-tile { width: 112px; }
+  #v605RefreshTile { width: 122px; }
+  .v605-header-stat-value { font-size: 13px; }
+}
+@media (max-width: 980px) {
+  .v605-summary-bar { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+}

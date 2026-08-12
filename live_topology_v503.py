@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import paramiko
 from flask import jsonify
 
-VERSION = "6.0.0"
+VERSION = "6.0.2"
 ROUTERS: List[Tuple[str, str]] = [
     ("192.168.30.1", "ROUTER"),
     ("192.168.30.2", "MESH1"),
@@ -225,9 +225,14 @@ printf 'TEMP=%s\n' "$TEMP"
 printf '__SYS_END__\n'
 
 # Klienti AP: hostapd ubus je autoritativní zdroj aktuálně asociovaných STA.
+# DŮLEŽITÉ: chyba ubus dotazu nesmí vypadat jako platný prázdný seznam klientů.
 for OBJ in $(ubus list 'hostapd.*' 2>/dev/null || true); do
   printf '__HOSTAPD_BEGIN__ %s\n' "$OBJ"
-  ubus call "$OBJ" get_clients 2>/dev/null || printf '{}\n'
+  if DATA="$(ubus call "$OBJ" get_clients 2>/dev/null)"; then
+    printf '__HOSTAPD_OK__\n%s\n' "$DATA"
+  else
+    printf '__HOSTAPD_ERROR__\n'
+  fi
   printf '__HOSTAPD_END__\n'
 done
 
@@ -286,29 +291,39 @@ printf '__FDB_END__\n'
         wifi24: set[str] = set()
         wifi5: set[str] = set()
         hostapd_objects = 0
-        hostapd_parse_ok = 0
+        hostapd_valid = 0
+        hostapd_failed = 0
 
         # OpenWrt hostapd get_clients vrací asociované klienty a frekvenci BSS.
-        # Tím se pásmo neurčuje nepřímo podle iw interface a odpojená STA se
-        # odstraní hned, jak ji hostapd přestane uvádět jako assoc=true.
+        # Platný výsledek může mít clients={} a to opravdu znamená 0 klientů.
+        # Chyba ubus/JSON/frekvence se ale označí jako neplatný Wi-Fi vzorek;
+        # v sample() se pak zachová poslední úspěšný Wi-Fi stav daného uzlu.
         for hm in re.finditer(r"__HOSTAPD_BEGIN__\s+(\S+)\n(.*?)__HOSTAPD_END__", out, re.S):
             hostapd_objects += 1
+            obj = hm.group(1)
             body = hm.group(2).strip()
-            try:
-                payload = json.loads(body or "{}")
-            except json.JSONDecodeError:
+            if not body.startswith("__HOSTAPD_OK__"):
+                hostapd_failed += 1
                 continue
-            hostapd_parse_ok += 1
+            body = body[len("__HOSTAPD_OK__"):].lstrip("\n")
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError:
+                hostapd_failed += 1
+                continue
+            if not isinstance(payload, dict) or "clients" not in payload:
+                hostapd_failed += 1
+                continue
             try:
                 freq = int(payload.get("freq") or 0)
             except (TypeError, ValueError):
                 freq = 0
             target = wifi24 if 2400 <= freq < 3000 else wifi5 if 4900 <= freq < 5925 else None
-            if target is None:
+            clients_obj = payload.get("clients")
+            if target is None or not isinstance(clients_obj, dict):
+                hostapd_failed += 1
                 continue
-            clients_obj = payload.get("clients") or {}
-            if not isinstance(clients_obj, dict):
-                continue
+            hostapd_valid += 1
             for mac, info in clients_obj.items():
                 mac_s = str(mac).lower()
                 if not MAC_RE.match(mac_s):
@@ -327,8 +342,9 @@ printf '__FDB_END__\n'
             typ = iface["type"]
             stations = iface["stations"]
             if typ == "ap":
-                # Fallback pouze když hostapd ubus není na daném uzlu dostupný.
-                if hostapd_objects == 0 or hostapd_parse_ok == 0:
+                # Fallback pouze při prvním startu / úplné absenci hostapd ubus.
+                # Při dočasné chybě hostapd později zachováme poslední dobrý stav.
+                if hostapd_objects == 0:
                     target = wifi24 if iface["band"] == "2.4" else wifi5 if iface["band"] == "5" else None
                     if target is not None:
                         target.update(row["mac"] for row in stations if MAC_RE.match(row["mac"]))
@@ -377,6 +393,10 @@ printf '__FDB_END__\n'
             "wifi_client_macs_24": sorted(wifi24),
             "wifi_client_macs_5": sorted(wifi5),
             "lan_client_macs": sorted(lan_macs),
+            "_wifi_sample_ok": (hostapd_objects > 0 and hostapd_failed == 0 and hostapd_valid == hostapd_objects) or hostapd_objects == 0,
+            "_hostapd_objects": hostapd_objects,
+            "_hostapd_valid": hostapd_valid,
+            "_hostapd_failed": hostapd_failed,
             "error": "",
             "updated_at": _now_text(),
             "stale": False,
@@ -539,6 +559,30 @@ printf '__FDB_END__\n'
                             "updated_at": _now_text(),
                         }
 
+        # v6.0.2: hostapd může jednotlivý ubus get_clients občas krátce odmítnout.
+        # Takový technický výpadek NESMÍ být interpretován jako 0 klientů.
+        # Zachováme poslední úspěšné Wi-Fi MAC daného uzlu pouze při chybě zdroje.
+        # Platný clients={} se naopak propíše okamžitě jako skutečných 0 klientů.
+        for ip, node in fetched.items():
+            if not node.get("online") or node.get("_wifi_sample_ok", True):
+                continue
+            old = self.nodes.get(ip, {})
+            if not old.get("online"):
+                continue
+            old24 = set(str(m).lower() for m in (old.get("wifi_client_macs_24") or []))
+            old5 = set(str(m).lower() for m in (old.get("wifi_client_macs_5") or []))
+            lan = set(str(m).lower() for m in (node.get("lan_client_macs") or []))
+            lan.difference_update(old24)
+            lan.difference_update(old5)
+            node["wifi_client_macs_24"] = sorted(old24)
+            node["wifi_client_macs_5"] = sorted(old5)
+            node["lan_client_macs"] = sorted(lan)
+            node["clients_24"] = len(old24)
+            node["clients_5"] = len(old5)
+            node["lan_clients"] = len(lan)
+            node["clients"] = len(old24 | old5 | lan)
+            node["wifi_stale"] = True
+
         # CPU/uptime publikujeme nejvýše každých HEALTH_SECONDS. Samotné SSH je už
         # otevřené kvůli topologii, takže to nepřidává další spojení na router.
         now_mono = time.monotonic()
@@ -593,7 +637,7 @@ printf '__FDB_END__\n'
             for ip, _name in ROUTERS:
                 n = copy.deepcopy(nodes[ip])
                 # Interní seznamy MAC nejsou potřeba v browseru.
-                for key in ("mesh_ifaces", "mesh_peers", "wifi_client_macs_24", "wifi_client_macs_5", "lan_client_macs", "_sample_ok"):
+                for key in ("mesh_ifaces", "mesh_peers", "wifi_client_macs_24", "wifi_client_macs_5", "lan_client_macs", "_sample_ok", "_wifi_sample_ok", "_hostapd_objects", "_hostapd_valid", "_hostapd_failed"):
                     n.pop(key, None)
                 public_nodes.append(n)
 

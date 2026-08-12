@@ -7,16 +7,16 @@ APP = ROOT / "app.py"
 INDEX = ROOT / "templates" / "index.html"
 
 if not APP.exists():
-    raise SystemExit("v6.0.1: app.py nenalezen")
+    raise SystemExit("v6.0.2: app.py nenalezen")
 if not INDEX.exists():
-    raise SystemExit("v6.0.1: templates/index.html nenalezen")
+    raise SystemExit("v6.0.2: templates/index.html nenalezen")
 
 app = APP.read_text(encoding="utf-8")
 marker = "# v5.0.7 explicit live topology API"
 if marker not in app:
     m = re.search(r"(?m)^(\s*app\s*=\s*Flask\([^\n]*\)\s*)$", app)
     if not m:
-        raise SystemExit("v6.0.1: nepodařilo se najít app = Flask(...)")
+        raise SystemExit("v6.0.2: nepodařilo se najít app = Flask(...)")
     injection = (
         m.group(1) + "\n\n" + marker + "\n"
         + "from live_topology_v503 import init_live_topology_v503\n"
@@ -34,8 +34,8 @@ html = re.sub(
     '', html, flags=re.I,
 )
 
-css_tag = '<link rel="stylesheet" href="/static/v503_live_topology.css?v=6.0.1">'
-js_tag = '<script src="/static/v503_live_topology.js?v=6.0.1"></script>'
+css_tag = '<link rel="stylesheet" href="/static/v503_live_topology.css?v=6.0.2">'
+js_tag = '<script src="/static/v503_live_topology.js?v=6.0.2"></script>'
 
 html = re.sub(
     r'<link\s+[^>]*href=["\']/static/v503_live_topology\.css\?v=[^"\']+["\'][^>]*>',
@@ -48,23 +48,23 @@ html = re.sub(
 
 if css_tag not in html:
     if "</head>" not in html.lower():
-        raise SystemExit("v6.0.1: index.html nemá </head>")
+        raise SystemExit("v6.0.2: index.html nemá </head>")
     html = re.sub(r"</head>", f"  {css_tag}\n</head>", html, count=1, flags=re.I)
 if js_tag not in html:
     if "</body>" not in html.lower():
-        raise SystemExit("v6.0.1: index.html nemá </body>")
+        raise SystemExit("v6.0.2: index.html nemá </body>")
     html = re.sub(r"</body>", f"  {js_tag}\n</body>", html, count=1, flags=re.I)
 
 # Cache bust Operation Manageru.
 html = re.sub(
     r'(<link\s+[^>]*href=["\']/static/v500_operation\.css\?v=)[^"\']+(["\'][^>]*>)',
-    r'\g<1>6.0.1\2', html, flags=re.I,
+    r'\g<1>6.0.2\2', html, flags=re.I,
 )
 html = re.sub(
     r'(<script\s+[^>]*src=["\']/static/v500_operation\.js\?v=)[^"\']+(["\'][^>]*></script>)',
-    r'\g<1>6.0.1\2', html, flags=re.I,
+    r'\g<1>6.0.2\2', html, flags=re.I,
 )
 
 INDEX.write_text(html, encoding="utf-8")
-print("v6.0.1: explicitní /api/v503/live-topology + vlastní živý topology renderer")
-print("v6.0.1: starý v5.0.2 timer interception odstraněn")
+print("v6.0.2: explicitní /api/v503/live-topology + vlastní živý topology renderer")
+print("v6.0.2: starý v5.0.2 timer interception odstraněn")

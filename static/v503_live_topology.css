@@ -266,3 +266,12 @@
 .v506-ihost-tile {
   margin-left: 2px !important;
 }
+
+/* v6.0.4 – samostatná LAN dlaždice v horní souhrnné liště. Je klonem
+   původní 2.4GHz dlaždice, takže drží stejnou velikost a styl. */
+#v604LanMetricBox {
+  flex: 0 1 auto;
+}
+#v604LanMetricValue {
+  font-variant-numeric: tabular-nums;
+}

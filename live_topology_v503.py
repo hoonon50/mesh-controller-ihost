@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import paramiko
 from flask import jsonify
 
-VERSION = "6.0.3"
+VERSION = "6.0.4"
 ROUTERS: List[Tuple[str, str]] = [
     ("192.168.30.1", "ROUTER"),
     ("192.168.30.2", "MESH1"),
@@ -29,6 +29,7 @@ SSH_TIMEOUT = max(2, int(os.environ.get("MESH_SSH_TIMEOUT", "6")))
 POLL_SECONDS = max(3, int(os.environ.get("MESH_LIVE_TOPOLOGY_POLL", "5")))
 HEALTH_SECONDS = max(POLL_SECONDS, int(os.environ.get("MESH_LIVE_HEALTH_POLL", "15")))
 NODE_FAILURE_GRACE = max(1, int(os.environ.get("MESH_NODE_FAILURE_GRACE", "2")))
+LAN_CLIENT_TTL_SECONDS = max(POLL_SECONDS, int(os.environ.get("MESH_LAN_CLIENT_TTL", "45")))
 
 try:
     LOCAL_TZ = ZoneInfo(os.environ.get("TZ", "Europe/Prague"))
@@ -193,6 +194,10 @@ class LiveTopologyCollector:
         self.last_duration_ms = 0
         self._health_cache: Dict[str, Dict[str, Any]] = {}
         self._node_failures: Dict[str, int] = {ip: 0 for ip, _name in ROUTERS}
+        # v6.0.4: LAN FDB je dynamická tabulka a může na jeden vzorek MAC ztratit.
+        # Paměť je pouze v RAM; nic dalšího se kvůli LAN klientům nezapisuje na SD.
+        # Jedna MAC má právě jednoho vlastníka (router), takže se při přesunu neduplikuje.
+        self._lan_memory: Dict[str, Dict[str, Any]] = {}
         self._host_cpu_prev: Optional[Tuple[int, int]] = None
         self.ihost: Dict[str, Any] = {
             "cpu_percent": None,
@@ -450,6 +455,7 @@ printf '__FDB_END__\n'
             "wifi_client_macs_24": sorted(wifi24),
             "wifi_client_macs_5": sorted(wifi5),
             "lan_client_macs": sorted(lan_macs),
+            "_lan_observed_macs": sorted(lan_macs),
             "_wifi_bss_samples": bss_samples,
             "_wifi_sample_ok": hostapd_failed == 0 and bool(bss_samples),
             "_hostapd_objects": hostapd_objects,
@@ -569,6 +575,78 @@ printf '__FDB_END__\n'
             })
         return links
 
+    def _stabilize_lan_clients(self, fetched: Dict[str, Dict[str, Any]]) -> None:
+        """Stabilizuje jen potvrzené fyzické LAN/FDB klienty.
+
+        Wi-Fi sem nevstupuje jako časová cache: asociovaní klienti z hostapd se
+        stále mění okamžitě. LAN MAC je po krátkém výpadku FDB držena v RAM po
+        LAN_CLIENT_TTL_SECONDS. Pokud se stejná MAC objeví na Wi-Fi, LAN záznam
+        se zahodí ihned, aby se klient nikdy nepočítal dvakrát.
+        """
+        now = time.monotonic()
+        wifi_global: set[str] = set()
+        for node in fetched.values():
+            if not node.get("online"):
+                continue
+            wifi_global.update(str(m).lower() for m in (node.get("wifi_client_macs_24") or []) if MAC_RE.match(str(m).lower()))
+            wifi_global.update(str(m).lower() for m in (node.get("wifi_client_macs_5") or []) if MAC_RE.match(str(m).lower()))
+
+        observed: Dict[str, List[str]] = {}
+        router_order = {ip: idx for idx, (ip, _name) in enumerate(ROUTERS)}
+        for ip, node in fetched.items():
+            # Jen čerstvý úspěšný SSH/FDB vzorek smí obnovit last_seen. Stale
+            # fallback uzlu nesmí uměle prodlužovat život LAN klienta navždy.
+            if not node.get("online") or not node.get("_sample_ok"):
+                continue
+            raw = node.get("_lan_observed_macs")
+            if raw is None:
+                raw = node.get("lan_client_macs") or []
+            for value in raw:
+                mac = str(value).lower()
+                if not MAC_RE.match(mac) or mac in wifi_global:
+                    continue
+                observed.setdefault(mac, []).append(ip)
+
+        # Wi-Fi má vždy přednost před případným starým FDB záznamem.
+        for mac in list(self._lan_memory):
+            if mac in wifi_global:
+                self._lan_memory.pop(mac, None)
+
+        # Čerstvé pozorování obnoví last_seen a případně přesune vlastníka MAC.
+        for mac, owners in observed.items():
+            unique = sorted(set(owners), key=lambda ip: router_order.get(ip, 999))
+            previous = self._lan_memory.get(mac, {})
+            prev_ip = str(previous.get("ip") or "")
+            owner = prev_ip if prev_ip in unique else unique[0]
+            self._lan_memory[mac] = {"ip": owner, "last_seen": now}
+
+        # Vypršení pouze LAN paměti.
+        for mac, info in list(self._lan_memory.items()):
+            try:
+                age = now - float(info.get("last_seen", 0.0))
+            except (TypeError, ValueError):
+                age = LAN_CLIENT_TTL_SECONDS + 1
+            owner = str(info.get("ip") or "")
+            owner_node = fetched.get(owner, {})
+            if age > LAN_CLIENT_TTL_SECONDS or not owner_node.get("online"):
+                self._lan_memory.pop(mac, None)
+
+        stable_by_node: Dict[str, set[str]] = {ip: set() for ip, _name in ROUTERS}
+        for mac, info in self._lan_memory.items():
+            owner = str(info.get("ip") or "")
+            if owner in stable_by_node and mac not in wifi_global:
+                stable_by_node[owner].add(mac)
+
+        for ip, node in fetched.items():
+            wifi24 = {str(m).lower() for m in (node.get("wifi_client_macs_24") or []) if MAC_RE.match(str(m).lower())}
+            wifi5 = {str(m).lower() for m in (node.get("wifi_client_macs_5") or []) if MAC_RE.match(str(m).lower())}
+            lan = stable_by_node.get(ip, set()) if node.get("online") else set()
+            node["lan_client_macs"] = sorted(lan)
+            node["lan_clients"] = len(lan)
+            node["clients"] = len(wifi24 | wifi5 | lan)
+            node["lan_stabilized"] = True
+            node["lan_ttl_seconds"] = LAN_CLIENT_TTL_SECONDS
+
     def sample(self) -> None:
         started = time.monotonic()
         fetched: Dict[str, Dict[str, Any]] = {}
@@ -662,19 +740,20 @@ printf '__FDB_END__\n'
                 elif band == "5":
                     wifi5.update(macs)
 
-            lan = {str(m).lower() for m in (node.get("lan_client_macs") or []) if MAC_RE.match(str(m).lower())}
-            lan.difference_update(wifi24)
-            lan.difference_update(wifi5)
+            lan_observed = {str(m).lower() for m in (node.get("_lan_observed_macs") or node.get("lan_client_macs") or []) if MAC_RE.match(str(m).lower())}
+            lan_observed.difference_update(wifi24)
+            lan_observed.difference_update(wifi5)
+            node["_lan_observed_macs"] = sorted(lan_observed)
             node["_wifi_bss_samples"] = merged_bss
             node["wifi_client_macs_24"] = sorted(wifi24)
             node["wifi_client_macs_5"] = sorted(wifi5)
-            node["lan_client_macs"] = sorted(lan)
             node["clients_24"] = len(wifi24)
             node["clients_5"] = len(wifi5)
-            node["lan_clients"] = len(lan)
-            node["clients"] = len(wifi24 | wifi5 | lan)
             node["wifi_stale"] = bool(stale_bss)
             node["wifi_stale_bss"] = stale_bss
+
+        # v6.0.4: pouze LAN část dostává krátkou RAM stabilizaci. Wi-Fi je LIVE.
+        self._stabilize_lan_clients(fetched)
 
         # CPU/uptime publikujeme nejvýše každých HEALTH_SECONDS. Samotné SSH je už
         # otevřené kvůli topologii, takže to nepřidává další spojení na router.
@@ -730,7 +809,7 @@ printf '__FDB_END__\n'
             for ip, _name in ROUTERS:
                 n = copy.deepcopy(nodes[ip])
                 # Interní seznamy MAC nejsou potřeba v browseru.
-                for key in ("mesh_ifaces", "mesh_peers", "wifi_client_macs_24", "wifi_client_macs_5", "lan_client_macs", "_wifi_bss_samples", "_sample_ok", "_wifi_sample_ok", "_hostapd_objects", "_hostapd_valid", "_hostapd_failed"):
+                for key in ("mesh_ifaces", "mesh_peers", "wifi_client_macs_24", "wifi_client_macs_5", "lan_client_macs", "_lan_observed_macs", "_wifi_bss_samples", "_sample_ok", "_wifi_sample_ok", "_hostapd_objects", "_hostapd_valid", "_hostapd_failed"):
                     n.pop(key, None)
                 public_nodes.append(n)
 
@@ -752,6 +831,7 @@ printf '__FDB_END__\n'
                     "clients_24": len(live_mac24),
                     "clients_5": len(live_mac5),
                     "lan_clients": len(live_lan),
+                    "lan_ttl_seconds": LAN_CLIENT_TTL_SECONDS,
                 },
                 "nodes": public_nodes,
                 "links": links,

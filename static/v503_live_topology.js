@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__MESH_V601_LIVE_TOPOLOGY__) return;
-  window.__MESH_V601_LIVE_TOPOLOGY__ = true;
+  if (window.__MESH_V604_LIVE_TOPOLOGY__) return;
+  window.__MESH_V604_LIVE_TOPOLOGY__ = true;
 
   const API = '/api/v503/live-topology';
   const REFRESH_MS = 5000;
@@ -112,7 +112,7 @@
     stage = document.createElement('div');
     stage.className = 'v503-live-stage';
     stage.id = 'v503LiveTopology';
-    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.2 · čekám…</div>';
+    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.4 · čekám…</div>';
     panel.appendChild(stage);
     svg = stage.querySelector('.v503-live-svg');
     status = stage.querySelector('.v503-live-status');
@@ -358,6 +358,64 @@
     return null;
   }
 
+  function ensureLanMetricTile() {
+    let tile = document.getElementById('v604LanMetricBox');
+    if (tile) return tile;
+
+    const source = metricBoxAndLeaf('2.4 GHZ') || metricBoxAndLeaf('2,4 GHZ') || metricBoxAndLeaf('5 GHZ');
+    if (!source || !source.box || !source.box.parentElement) return null;
+
+    tile = source.box.cloneNode(true);
+    tile.id = 'v604LanMetricBox';
+    tile.classList.remove('v601-live-metric-box');
+    tile.querySelectorAll('.v601-live-metric-value').forEach(el => el.remove());
+    tile.querySelectorAll('.v601-legacy-metric-value').forEach(el => {
+      el.classList.remove('v601-legacy-metric-value');
+      el.style.removeProperty('visibility');
+    });
+
+    // Přepiš pouze textový label zdrojové dlaždice.
+    const walker = document.createTreeWalker(tile, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = walker.nextNode())) {
+      const t = (n.nodeValue || '').trim().toUpperCase();
+      if (t === '2.4 GHZ' || t === '2,4 GHZ' || t === '5 GHZ') {
+        n.nodeValue = 'LAN';
+        break;
+      }
+    }
+
+    source.box.parentElement.insertBefore(tile, source.box.nextSibling);
+    const leaves = Array.from(tile.querySelectorAll('*')).filter(el => {
+      if (el.children.length) return false;
+      const t = (el.textContent || '').trim();
+      if (!t || t.toUpperCase() === 'LAN' || t.length > 30) return false;
+      return parseFloat(getComputedStyle(el).fontSize || '0') >= 13;
+    });
+    leaves.sort((a, b) => parseFloat(getComputedStyle(b).fontSize || '0') - parseFloat(getComputedStyle(a).fontSize || '0'));
+    if (leaves[0]) {
+      leaves[0].id = 'v604LanMetricValue';
+      leaves[0].textContent = '0';
+      leaves[0].style.removeProperty('visibility');
+    }
+    tile.title = 'Potvrzení LAN klienti · krátké výpadky FDB jsou stabilizované pouze v RAM';
+    return tile;
+  }
+
+  function updateLanMetric(value) {
+    const tile = ensureLanMetricTile();
+    if (!tile) return false;
+    let leaf = tile.querySelector('#v604LanMetricValue');
+    if (!leaf) {
+      const candidates = Array.from(tile.querySelectorAll('*')).filter(el => !el.children.length && (el.textContent || '').trim() !== 'LAN');
+      candidates.sort((a, b) => parseFloat(getComputedStyle(b).fontSize || '0') - parseFloat(getComputedStyle(a).fontSize || '0'));
+      leaf = candidates[0] || null;
+      if (leaf) leaf.id = 'v604LanMetricValue';
+    }
+    if (leaf) leaf.textContent = String(value ?? 0);
+    return !!leaf;
+  }
+
   function setLiveMetric(labelText, value) {
     const found = metricBoxAndLeaf(labelText);
     if (!found) return false;
@@ -395,6 +453,7 @@
   }
 
   function updateMetrics(summary, clock) {
+    updateLanMetric(summary.lan_clients || 0);
     const values = [
       ['ONLINE ROUTERY', `${summary.online_routers || 0} / ${summary.router_count || 5}`],
       ['MESH SPOJE', String(summary.mesh_links || 0)],
@@ -418,8 +477,8 @@
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v6.0.2 · ${payload.clock || ''} · #${payload.sequence || 0}`
-        : `LIVE v6.0.2 · čekám na routery`;
+        ? `LIVE v6.0.4 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        : `LIVE v6.0.4 · čekám na routery`;
       status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
     }
   }
@@ -434,7 +493,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v6.0.2 · API nedostupné';
+        status.textContent = 'LIVE v6.0.4 · API nedostupné';
         status.title = String(err);
       }
     } finally {

@@ -400,3 +400,51 @@
   .v606-header-cluster { flex-wrap: wrap !important; }
   .v606-header-host .wan-usage-wrap { margin-left: 0 !important; }
 }
+
+/* v6.0.7 ---------------------------------------------------------------
+   OPRAVA UMÍSTĚNÍ: iHOST + DATA + OBNOVENO jsou přímí sourozenci titleBox
+   v PRVNÍ horní liště. Původní ZÁLOHY(/data) a OBNOVENO ve summary jsou skryté. */
+.v607-header-host {
+  display: flex !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important;
+  gap: 10px !important;
+  width: 100% !important;
+}
+.v607-header-host > [data-v607-titlebox="1"] {
+  flex: 0 0 auto !important;
+}
+.v607-header-tools {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex: 0 0 auto !important;
+  margin-left: 2px !important;
+}
+.v607-header-tools .v506-ihost-tile,
+.v607-header-tools .v605-header-stat-tile {
+  margin: 0 !important;
+  align-self: center !important;
+}
+.v607-header-tools .v506-ihost-tile {
+  min-width: 218px !important;
+  width: 218px !important;
+}
+.v607-header-tools #v605DataTile {
+  width: 112px !important;
+}
+.v607-header-tools #v605RefreshTile {
+  width: 126px !important;
+}
+.v607-header-host .wan-usage-wrap {
+  margin-left: auto !important;
+  flex: 0 0 auto !important;
+}
+/* Starý v606 wrapper se v v6.0.7 nepoužívá. */
+#v606HeaderCluster { display: contents !important; }
+
+@media (max-width: 1220px) {
+  .v607-header-host { flex-wrap: wrap !important; }
+  .v607-header-tools { flex-wrap: wrap !important; }
+  .v607-header-host .wan-usage-wrap { margin-left: 0 !important; }
+}

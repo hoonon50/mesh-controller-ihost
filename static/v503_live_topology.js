@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__MESH_V606_LIVE_TOPOLOGY__) return;
-  window.__MESH_V606_LIVE_TOPOLOGY__ = true;
+  if (window.__MESH_V607_LIVE_TOPOLOGY__) return;
+  window.__MESH_V607_LIVE_TOPOLOGY__ = true;
 
   const API = '/api/v503/live-topology';
   const REFRESH_MS = 5000;
@@ -115,7 +115,7 @@
     stage = document.createElement('div');
     stage.className = 'v503-live-stage';
     stage.id = 'v503LiveTopology';
-    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.6 · čekám…</div>';
+    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.7 · čekám…</div>';
     panel.appendChild(stage);
     svg = stage.querySelector('.v503-live-svg');
     status = stage.querySelector('.v503-live-status');
@@ -252,55 +252,65 @@
     const title = exactTextElement('OpenWRT MESH CONTROLLER PRO');
     if (!title) return null;
 
-    // v6.0.6: po prvním mountu už máme vlastní levý header cluster. Vždy
-    // vracíme jeho skutečného rodiče, aby další refresh nevnořoval dlaždice.
-    const existingCluster = document.getElementById('v606HeaderCluster');
-    if (existingCluster && existingCluster.parentElement) {
-      const marked = existingCluster.querySelector('[data-v606-titlebox="1"]');
-      return {host: existingCluster.parentElement, title, titleBox: marked || title, cluster: existingCluster};
-    }
-
-    let host = title.parentElement;
-    for (let i = 0; host && i < 7; i += 1, host = host.parentElement) {
-      const r = host.getBoundingClientRect();
-      if (r.width > 500 && r.height >= 42 && r.height <= 115) {
-        let titleBox = title;
-        while (titleBox.parentElement && titleBox.parentElement !== host) {
-          titleBox = titleBox.parentElement;
-        }
-        return {host, title, titleBox, cluster: null};
+    // 1) Najdi nejmenší blok obsahující název i SONOFF subtitle.
+    let titleBox = title;
+    for (let i = 0, cur = title; cur && i < 6; i += 1, cur = cur.parentElement) {
+      const txt = (cur.textContent || '').replace(/\s+/g, ' ').trim();
+      const r = cur.getBoundingClientRect();
+      if (/OpenWRT MESH CONTROLLER PRO/i.test(txt) && /SONOFF iHost/i.test(txt) &&
+          r.width >= 220 && r.width <= 620 && r.height >= 34 && r.height <= 90) {
+        titleBox = cur;
+        break;
       }
     }
-    return {host: title.parentElement, title, titleBox: title, cluster: null};
+
+    // 2) Header je nejbližší nízký široký rodič, který zároveň obsahuje WAN dlaždice.
+    const wanWrap = document.querySelector('.wan-usage-wrap');
+    let host = titleBox.parentElement;
+    for (let i = 0, cur = titleBox.parentElement; cur && i < 7; i += 1, cur = cur.parentElement) {
+      const r = cur.getBoundingClientRect();
+      const hasWan = !!(wanWrap && cur.contains(wanWrap));
+      if (hasWan && r.width > 700 && r.height >= 45 && r.height <= 115) {
+        host = cur;
+        break;
+      }
+    }
+
+    return {host, title, titleBox, wanWrap};
   }
 
   function ensureHeaderCluster() {
     const place = findHeaderPlacement();
-    if (!place || !place.host) return null;
+    if (!place || !place.host || !place.titleBox) return null;
 
-    let cluster = document.getElementById('v606HeaderCluster');
-    if (!cluster) {
-      cluster = document.createElement('div');
-      cluster.id = 'v606HeaderCluster';
-      cluster.className = 'v606-header-cluster';
-
-      const titleBox = place.titleBox || place.title;
-      if (titleBox && titleBox.parentElement === place.host) {
-        titleBox.dataset.v606Titlebox = '1';
-        place.host.insertBefore(cluster, titleBox);
-        cluster.appendChild(titleBox);
-      } else {
-        place.host.insertBefore(cluster, place.host.firstChild);
-        if (titleBox) {
-          titleBox.dataset.v606Titlebox = '1';
-          cluster.appendChild(titleBox);
+    // Pokud z předchozího kódu existuje v606 wrapper, rozbal ho zpět.
+    const oldCluster = document.getElementById('v606HeaderCluster');
+    if (oldCluster && oldCluster.parentElement) {
+      const oldTitle = oldCluster.querySelector('[data-v606-titlebox="1"]');
+      if (oldTitle) oldCluster.parentElement.insertBefore(oldTitle, oldCluster);
+      Array.from(oldCluster.children).forEach(ch => {
+        if (ch !== oldTitle && ch.id !== 'v506IhostTile' && ch.id !== 'v605DataTile' && ch.id !== 'v605RefreshTile') {
+          oldCluster.parentElement.insertBefore(ch, oldCluster);
         }
-      }
+      });
+      oldCluster.remove();
     }
 
-    place.host.classList.add('v506-header-host', 'v606-header-host');
-    cluster.classList.add('v606-header-cluster');
-    return {host: place.host, cluster};
+    let tools = document.getElementById('v607HeaderTools');
+    if (!tools) {
+      tools = document.createElement('div');
+      tools.id = 'v607HeaderTools';
+      tools.className = 'v607-header-tools';
+      // Klíčové: vložit jako PŘÍMÉHO SOUROZENCE hned za titleBox v horním headeru.
+      if (place.titleBox.nextSibling) place.host.insertBefore(tools, place.titleBox.nextSibling);
+      else place.host.appendChild(tools);
+    } else if (tools.parentElement !== place.host) {
+      place.host.insertBefore(tools, place.titleBox.nextSibling);
+    }
+
+    place.host.classList.add('v607-header-host');
+    place.titleBox.dataset.v607Titlebox = '1';
+    return {host: place.host, cluster: tools, titleBox: place.titleBox, wanWrap: place.wanWrap};
   }
 
   function hideLegacyRefreshButton() {
@@ -349,7 +359,7 @@
         <span>TEMP <b data-v505="temp">—</b></span>
       </div>`;
 
-    // v6.0.6: iHOST je vždy ve stejném horním clusteru jako název/subtitle.
+    // v6.0.7: iHOST je přímý sourozenec titleBox v horním headeru.
     place.cluster.appendChild(tile);
     hideLegacyRefreshButton();
     return tile;
@@ -381,11 +391,26 @@
     if (legacyDataLeaf && document.body.contains(legacyDataLeaf)) {
       return (legacyDataLeaf.textContent || '').trim() || '—';
     }
-    const found = findMetricByLabels(['DATA', '/DATA', '/DATA/']);
+    // Původní souhrnná dlaždice má nadpis ZÁLOHY a hodnotu /data.
+    let found = findMetricByLabels(['ZÁLOHY']);
+    if (!found) found = findMetricByLabels(['DATA', '/DATA', '/DATA/']);
     if (found) {
       legacyDataLeaf = found.leaf;
       legacyDataBox = found.box;
       return (found.leaf.textContent || '').trim() || '—';
+    }
+    // Poslední fallback: najdi přímo leaf s /data a vezmi jeho malý metric box.
+    const valueEl = exactTextElement('/data');
+    if (valueEl) {
+      let box = valueEl.parentElement;
+      for (let i = 0; box && i < 5; i += 1, box = box.parentElement) {
+        const r = box.getBoundingClientRect();
+        if (r.width >= 100 && r.width <= 420 && r.height >= 42 && r.height <= 110) {
+          legacyDataLeaf = valueEl;
+          legacyDataBox = box;
+          return '/data';
+        }
+      }
     }
     return '—';
   }
@@ -544,11 +569,15 @@
       if (found && found.box && !keepBoxes.includes(found.box)) keepBoxes.push(found.box);
     }
 
-    const dataFound = findMetricByLabels(['DATA', '/DATA', '/DATA/']);
+    const dataFound = findMetricByLabels(['ZÁLOHY']) || findMetricByLabels(['DATA', '/DATA', '/DATA/']);
     if (dataFound) {
       legacyDataLeaf = dataFound.leaf;
       legacyDataBox = dataFound.box;
       legacyDataBox.classList.add('v605-summary-hidden');
+    } else {
+      // Pokud label ZÁLOHY není textový leaf, použij box nalezený přes hodnotu /data.
+      legacyDataValue();
+      if (legacyDataBox) legacyDataBox.classList.add('v605-summary-hidden');
     }
     const refreshFound = findMetricByLabels(['OBNOVENO']);
     if (refreshFound) {
@@ -625,7 +654,7 @@
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v6.0.6 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        ? `LIVE v6.0.7 · ${payload.clock || ''} · #${payload.sequence || 0}`
         : `LIVE v6.0.4 · čekám na routery`;
       status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
     }
@@ -641,7 +670,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v6.0.6 · API nedostupné';
+        status.textContent = 'LIVE v6.0.7 · API nedostupné';
         status.title = String(err);
       }
     } finally {

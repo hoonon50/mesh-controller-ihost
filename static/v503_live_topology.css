@@ -464,3 +464,133 @@
   height: 50px !important;
   box-sizing: border-box !important;
 }
+
+/* v6.0.9 ---------------------------------------------------------------
+   Revize překryvů všech dlaždic.
+   Starý summary panel je celý skrytý; nový LIVE summary žije mimo něj v
+   Shadow DOM, takže původní dashboard nemůže přepsat LAN/ZÁLOHY ani jiné boxy. */
+.v609-legacy-summary {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+.v609-live-summary-host {
+  display: block !important;
+  position: relative !important;
+  z-index: 20 !important;
+  isolation: isolate !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+
+/* Horní header: pevné flex zóny, žádné absolutní překrývání dlaždic. */
+.v607-header-host,
+.v606-header-host,
+.v506-header-host {
+  position: relative !important;
+  z-index: 50 !important;
+  isolation: isolate !important;
+  display: flex !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important;
+  gap: 8px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+}
+.v607-header-host > [data-v607-titlebox="1"] {
+  flex: 1 1 230px !important;
+  min-width: 220px !important;
+  max-width: 360px !important;
+  position: relative !important;
+  z-index: 51 !important;
+}
+#v607HeaderTools {
+  display: flex !important;
+  align-items: center !important;
+  flex: 0 0 auto !important;
+  gap: 7px !important;
+  margin: 0 !important;
+  position: relative !important;
+  z-index: 52 !important;
+  isolation: isolate !important;
+}
+#v607HeaderTools > #v506IhostTile,
+#v607HeaderTools > #v605DataTile,
+#v607HeaderTools > #v605RefreshTile {
+  position: relative !important;
+  inset: auto !important;
+  float: none !important;
+  transform: none !important;
+  margin: 0 !important;
+  height: 50px !important;
+  min-height: 50px !important;
+  max-height: 50px !important;
+  overflow: hidden !important;
+  z-index: 53 !important;
+}
+#v607HeaderTools > #v506IhostTile {
+  width: 188px !important;
+  min-width: 188px !important;
+  max-width: 188px !important;
+  padding-left: 9px !important;
+  padding-right: 9px !important;
+}
+#v607HeaderTools > #v605DataTile {
+  width: 78px !important;
+  min-width: 78px !important;
+  max-width: 78px !important;
+}
+#v607HeaderTools > #v605RefreshTile {
+  width: 104px !important;
+  min-width: 104px !important;
+  max-width: 104px !important;
+}
+#v607HeaderTools .v506-ihost-values {
+  gap: 5px !important;
+  font-size: 7.8px !important;
+}
+#v607HeaderTools .v506-ihost-values b {
+  font-size: 10px !important;
+}
+#v607HeaderTools .v605-header-stat-value {
+  font-size: 12px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+.v607-header-host .wan-usage-wrap {
+  position: relative !important;
+  z-index: 52 !important;
+  flex: 0 0 298px !important;
+  width: 298px !important;
+  min-width: 298px !important;
+  max-width: 298px !important;
+  margin-left: auto !important;
+  overflow: visible !important;
+}
+.v607-header-host .wan-usage-wrap .wan-usage-tile {
+  position: relative !important;
+  z-index: 53 !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+}
+
+/* Pokud se řádek nevejde, raději čistý wrap než překryv. */
+@media (max-width: 1080px) {
+  .v607-header-host,
+  .v606-header-host,
+  .v506-header-host {
+    flex-wrap: wrap !important;
+  }
+  .v607-header-host > [data-v607-titlebox="1"] {
+    flex: 1 1 260px !important;
+    max-width: none !important;
+  }
+  .v607-header-host .wan-usage-wrap {
+    margin-left: 0 !important;
+  }
+}

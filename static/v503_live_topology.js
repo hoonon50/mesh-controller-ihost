@@ -1,7 +1,7 @@
 (() => {
   'use strict';
-  if (window.__MESH_V607_LIVE_TOPOLOGY__) return;
-  window.__MESH_V607_LIVE_TOPOLOGY__ = true;
+  if (window.__MESH_V609_LIVE_TOPOLOGY__) return;
+  window.__MESH_V609_LIVE_TOPOLOGY__ = true;
 
   const API = '/api/v503/live-topology';
   const REFRESH_MS = 5000;
@@ -30,6 +30,8 @@
   let legacyDataLeaf = null;
   let legacyDataBox = null;
   let legacyRefreshBox = null;
+  let legacySummaryParent = null;
+  let liveSummaryHost = null;
 
   function exactTextElement(text) {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -115,7 +117,7 @@
     stage = document.createElement('div');
     stage.className = 'v503-live-stage';
     stage.id = 'v503LiveTopology';
-    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.7 · čekám…</div>';
+    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.9 · čekám…</div>';
     panel.appendChild(stage);
     svg = stage.querySelector('.v503-live-svg');
     status = stage.querySelector('.v503-live-status');
@@ -584,6 +586,88 @@
     return null;
   }
 
+  function findLegacySummaryParent() {
+    if (legacySummaryParent && document.body.contains(legacySummaryParent)) return legacySummaryParent;
+
+    const labels = ['ONLINE ROUTERY', 'MESH SPOJE', 'KLIENTI'];
+    const boxes = [];
+    for (const label of labels) {
+      const found = metricBoxAndLeaf(label);
+      if (found && found.box) boxes.push(found.box);
+    }
+    if (boxes.length < 3) return null;
+
+    const parents = boxes.map(box => box.parentElement).filter(Boolean);
+    if (!parents.length || !parents.every(p => p === parents[0])) return null;
+    legacySummaryParent = parents[0];
+    return legacySummaryParent;
+  }
+
+  function mountIndependentSummary() {
+    const legacy = findLegacySummaryParent();
+    if (!legacy || !legacy.parentElement) return null;
+
+    // v6.0.9: žádná nová viditelná dlaždice už není potomkem starého summary.
+    // Starý renderer si smí dál aktualizovat svůj DOM, ale celý je neviditelný.
+    legacy.classList.add('v609-legacy-summary');
+    legacy.setAttribute('aria-hidden', 'true');
+
+    if (liveSummaryHost && document.body.contains(liveSummaryHost)) return liveSummaryHost;
+
+    liveSummaryHost = document.getElementById('v609LiveSummaryHost');
+    if (!liveSummaryHost) {
+      liveSummaryHost = document.createElement('div');
+      liveSummaryHost.id = 'v609LiveSummaryHost';
+      liveSummaryHost.className = 'v609-live-summary-host';
+      legacy.parentElement.insertBefore(liveSummaryHost, legacy);
+    }
+
+    if (!liveSummaryHost.shadowRoot) {
+      const root = liveSummaryHost.attachShadow({mode: 'open'});
+      root.innerHTML = `
+        <style>
+          :host{display:block;width:100%;box-sizing:border-box;position:relative;z-index:20;isolation:isolate}
+          .bar{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;width:100%;box-sizing:border-box}
+          .tile{box-sizing:border-box;min-width:0;height:62px;padding:9px 12px;border:1px solid rgba(255,255,255,.10);border-radius:9px;background:rgba(255,255,255,.035);box-shadow:inset 0 1px 0 rgba(255,255,255,.025);overflow:hidden;color:#eef2f5;font-variant-numeric:tabular-nums}
+          .label{font-size:9px;line-height:1;font-weight:800;letter-spacing:.055em;color:#8f99a6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+          .value{margin-top:7px;font-size:21px;line-height:1;font-weight:850;color:#f2f5f7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+          .tile[data-k="online"] .value,.tile[data-k="links"] .value{color:#48d88c}
+          .tile[data-k="clients"] .value{color:#68a9ff}
+          .tile[data-k="c5"] .value{color:#78b5ff}
+          .tile[data-k="c24"] .value{color:#c795ff}
+          .tile[data-k="lan"] .value{color:#49dca0}
+          @media(max-width:980px){.bar{grid-template-columns:repeat(3,minmax(0,1fr))}.tile{height:58px}.value{font-size:19px}}
+        </style>
+        <div class="bar">
+          <div class="tile" data-k="online"><div class="label">ONLINE ROUTERY</div><div class="value">—</div></div>
+          <div class="tile" data-k="links"><div class="label">MESH SPOJE</div><div class="value">—</div></div>
+          <div class="tile" data-k="clients"><div class="label">KLIENTI</div><div class="value">—</div></div>
+          <div class="tile" data-k="c5"><div class="label">5 GHz</div><div class="value">—</div></div>
+          <div class="tile" data-k="c24"><div class="label">2.4 GHz</div><div class="value">—</div></div>
+          <div class="tile" data-k="lan"><div class="label">LAN</div><div class="value">—</div></div>
+        </div>`;
+    }
+    return liveSummaryHost;
+  }
+
+  function updateIndependentSummary(summary) {
+    const host = mountIndependentSummary();
+    if (!host || !host.shadowRoot) return false;
+    const values = {
+      online: `${summary.online_routers || 0} / ${summary.router_count || 5}`,
+      links: String(summary.mesh_links || 0),
+      clients: String(summary.clients || 0),
+      c5: String(summary.clients_5 || 0),
+      c24: String(summary.clients_24 || 0),
+      lan: String(summary.lan_clients || 0)
+    };
+    for (const [key, value] of Object.entries(values)) {
+      const el = host.shadowRoot.querySelector(`.tile[data-k="${key}"] .value`);
+      if (el) el.textContent = value;
+    }
+    return true;
+  }
+
   function applySummaryLayout() {
     const keepSpecs = [
       ['ONLINE ROUTERY'],
@@ -690,18 +774,10 @@
   }
 
   function updateMetrics(summary, clock, dataDir) {
-    updateLanMetric(summary.lan_clients || 0);
-    const values = [
-      ['ONLINE ROUTERY', `${summary.online_routers || 0} / ${summary.router_count || 5}`],
-      ['MESH SPOJE', String(summary.mesh_links || 0)],
-      ['KLIENTI', String(summary.clients || 0)],
-      ['5 GHZ', String(summary.clients_5 || 0)],
-      ['2.4 GHZ', String(summary.clients_24 || 0)],
-      ['2,4 GHZ', String(summary.clients_24 || 0)]
-    ];
-    for (const [label, value] of values) setLiveMetric(label, value);
+    // v6.0.9: všech šest viditelných summary dlaždic je v samostatném Shadow DOM.
+    // Původní dashboard do nich proto nemůže zapisovat ani podle pořadí prvků.
+    updateIndependentSummary(summary || {});
     updateHeaderAuxTiles(clock || '', dataDir || '/data');
-    applySummaryLayout();
     hideLegacyRefreshButton();
   }
 
@@ -715,8 +791,8 @@
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v6.0.8 · ${payload.clock || ''} · #${payload.sequence || 0}`
-        : `LIVE v6.0.8 · čekám na routery`;
+        ? `LIVE v6.0.9 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        : `LIVE v6.0.9 · čekám na routery`;
       status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
     }
   }
@@ -731,7 +807,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v6.0.8 · API nedostupné';
+        status.textContent = 'LIVE v6.0.9 · API nedostupné';
         status.title = String(err);
       }
     } finally {

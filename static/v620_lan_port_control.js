@@ -19,7 +19,10 @@
 
   function protectedNames(ip, port) {
     const names = state.protected?.[ip]?.[port];
-    return Array.isArray(names) ? names.filter(Boolean) : [];
+    if (!Array.isArray(names)) return [];
+    return names.filter(Boolean).map(name =>
+      String(name).toLowerCase() === 'home assistant' ? 'HASSIO' : String(name)
+    );
   }
 
   function tileInfo(tile) {

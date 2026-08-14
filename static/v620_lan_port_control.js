@@ -111,6 +111,12 @@
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.ok) {
+        // Ochrana může být backendem odhalena čerstvěji než posledním UI poll-em.
+        // V tom případě nic neblokuj, pouze tiše obnov stav dlaždice.
+        if (data.protected) {
+          await loadState();
+          return;
+        }
         throw new Error(data.error || 'Změnu LAN portu se nepodařilo provést.');
       }
       await loadState();

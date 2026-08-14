@@ -1,4 +1,4 @@
-OpenWRT MESH CONTROLLER PRO v6.3.2 – SONOFF iHost ARMv7
+OpenWRT MESH CONTROLLER PRO v6.3.3 – SONOFF iHost ARMv7
 
 Web: http://IP_IHOST:8088
 Docker síť: host
@@ -13,6 +13,7 @@ HLAVNÍ FUNKCE
 - živí Wi-Fi klienti z hostapd UBUS po jednotlivých BSS/AP
 - oddělené počty 2.4 GHz / 5 GHz / LAN / celkem
 - LAN klienti z fyzického FDB s 45s stabilizací pouze v RAM
+- fyzický stav LAN1–LAN4 UP/DOWN + rychlost v 5s live cyklu
 - LAN port control: 2× klik = runtime BLOKOVÁN / POVOLENÍ bez UCI změn
 - LAN port inspector: 1× klik pouze na UP port = IP / hostname / MAC zařízení
 - topology inspector: 1× klik na ROUTER/MESH = klienti po Wi-Fi pásmu a LAN1–LAN4
@@ -30,7 +31,7 @@ HLAVNÍ FUNKCE
 
 LIVE INTERVALY
 --------------
-- topologie / klienti / mesh spoje: 5 s
+- topologie / klienti / mesh spoje / LAN1–LAN4 fyzický stav: 5 s
 - LAN blokovací watchdog: 5 s
 - kontrola chráněných iHOST/HASSIO portů: 30 s
 - CPU / uptime routerů: 15 s
@@ -38,22 +39,21 @@ LIVE INTERVALY
 - WAN persistence na disk: 1x za hodinu + graceful flush
 - aktivní MAC→IPv4 sweep nejvýše 1x za 60 s a pouze při nalezené MAC bez IPv4
 
-VERZE v6.3.2
+VERZE v6.3.3
 ------------
-- při známé klientské MAC bez IPv4 se už Controller nespokojí s textem IP neznámá
-- nejdřív použije aktuální neighbor/ARP tabulku, DHCP lease a známý snapshot klientů
-- pokud IPv4 stále chybí, MAIN router provede krátký aktivní /24 ping sweep pro obnovení ARP/neighbour tabulky
-- po sweepu se MAC znovu páruje s IPv4
-- resolver je společný pro TOPOLOGII i LAN port inspector
-- resolver nic nezapisuje na SD; krátká úspěšná MAC→IPv4 cache je pouze v RAM
-- aktivní sweep je rate-limitovaný, aby se nespouštěl při každém kliknutí
-- pokud zařízení objektivně žádnou IPv4 nemá, Controller ji nevymýšlí
-- DOWN a BLOKOVÁN LAN port na 1× klik dál nic neotevírá
-- 2× klik na LAN port dál blokuje/povoluje port podle v6.2.0
-- ochrana iHOST/HASSIO a /data/lan_port_state.json zůstávají beze změny
-- OpenWrt UCI konfigurace se nemění
-- GitHub Actions publikuje :latest a :6.3.2
-- docker-compose lokální image tag je 6.3.2
+- dlaždice jednotlivých LAN portů už nepoužívají pro UP/DOWN a rychlost pouze starší /api/status snapshot
+- fyzický carrier, operstate a speed LAN1–LAN4 se čtou v tomtéž 5s SSH vzorku jako live topologie
+- nevzniká žádné další SSH spojení jen kvůli portům
+- live payload doplňuje u každého routeru pole ports
+- existující LAN dlaždice se aktualizují přímo na místě každých 5 s
+- po starém 30s překreslení portsGrid se poslední live stav ihned znovu aplikuje
+- blokovací vrstva v6.2.0 dostává současně aktualizovaný původní UP/DOWN stav, takže nevrací staré hodnoty
+- červené BLOKOVÁN, ochrana iHOST/HASSIO a 2× klik zůstávají beze změny
+- DOWN/BLOKOVÁN port dál na 1× klik neotevírá inspector
+- aktivní MAC→IPv4 resolver z v6.3.2 zůstává beze změny
+- žádné nové zápisy na SD a žádné změny OpenWrt UCI
+- GitHub Actions publikuje :latest a :6.3.3
+- docker-compose lokální image tag je 6.3.3
 
 DŮLEŽITÉ PŘI AKTUALIZACI
 ------------------------

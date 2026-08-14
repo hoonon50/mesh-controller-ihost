@@ -94,17 +94,11 @@
     const protectedBy = protectedNames(info.ip, info.port);
     const blocked = isBlocked(info.ip, info.port);
 
-    if (!blocked && protectedBy.length) {
-      alert(`Port ${info.port.toUpperCase()} nelze zablokovat.\n\nChráněné zařízení: ${protectedBy.join(', ')}`);
-      return;
-    }
+    // Chráněné porty jsou pouze informační: dvojklik na nich nic neprovede
+    // a neotvírá žádné dialogové okno.
+    if (!blocked && protectedBy.length) return;
 
     const next = !blocked;
-    const question = next
-      ? `Zablokovat ${info.port.toUpperCase()} na ${info.ip}?\n\nPort bude vypnut pouze runtime. OpenWrt konfigurace se nezmění a Controller blokaci po restartu routeru znovu aplikuje.`
-      : `Povolit ${info.port.toUpperCase()} na ${info.ip}?`;
-    if (!confirm(question)) return;
-
     tile.classList.add('v620-port-working');
     try {
       const response = await fetch(API, {

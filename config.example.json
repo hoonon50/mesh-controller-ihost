@@ -8,7 +8,7 @@
   ],
   "ssh": {
     "user": "root",
-    "password": "root",
+    "password": "CHANGE_ME",
     "key_file": "",
     "timeout": 5
   },

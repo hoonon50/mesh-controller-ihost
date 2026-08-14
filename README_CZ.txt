@@ -1,46 +1,54 @@
-OpenWrt Mesh Controller PRO WEB v3.2 – SONOFF iHost ARMv7
+OpenWRT MESH CONTROLLER PRO v6.1.0 – SONOFF iHost ARMv7
 
 Web: http://IP_IHOST:8088
 Docker síť: host
 Persistentní data: /data
 Cílová architektura: linux/arm/v7
+GHCR: ghcr.io/hoonon50/mesh-controller-ihost
 
-Funkce:
+HLAVNÍ FUNKCE
+--------------
 - živý stav 5 OpenWrt uzlů přes SSH/Paramiko
-- 802.11s mesh topologie + RSSI
-- Wi-Fi klienti
-- potvrzené LAN klienty z FDB/brctl
-- ARP-only zařízení jako Neurčené
-- fyzické LAN porty a rychlost
-- automatický refresh
-- aktivní scan LAN
-- ping všech uzlů
-- záloha wireless/network/dhcp/dawn do /data/backups
-- restart všech routerů
-- LED OFF/ON/default
-- stav USB overlay / package manageru hlavního uzlu
-- aktualizace balíčků všech routerů
-- diagnostický log v /data/mesh-controller.log
+- 802.11s mesh topologie, RSSI a bitrate spojů
+- živí Wi-Fi klienti z hostapd UBUS po jednotlivých BSS/AP
+- oddělené počty 2.4 GHz / 5 GHz / LAN / celkem
+- LAN klienti z fyzického FDB s 45s stabilizací pouze v RAM
+- iHOST CPU / RAM / TEMP
+- DATA a OBNOVENO v horním headeru
+- WAN DOWNLOAD / UPLOAD a měsíční/roční historie
+- persistentní WAN data v /data/wan_usage.json
+- zálohy všech routerů do /data/backups + ZIP download
+- PING MESH, reboot, OWUT a rolling update operace
+- perzistentní operation manager v /data/mesh_operation.json
+- Wi-Fi AP inactivity policy max_inactivity=60 / skip_inactivity_poll=0
+- GitHub Actions build pro linux/arm/v7 a publikace do GHCR
 
-ZMĚNY v3.2
------------
-- SAFE MESH zůstává úplně odstraněný
-- odstraněn SSH terminál z v3.1
-- přidán samostatný panel „Průběh operace“
-- progress bar 0–100 % pro delší operace
-- živý stav jednotlivých routerů: ČEKÁ / PROBÍHÁ / HOTOVO / CHYBA
-- živý čas průběhu operace
-- živý provozní log dané operace
-- progress funguje pro obnovení stavu, aktivní scan, ping, zálohu, LED, aktualizaci balíčků a restart
-- během dlouhé operace jsou ostatní akční tlačítka zablokovaná, aby se operace nekřížily
-- automatický refresh se během dlouhé operace dočasně neprovádí
-- topologie je roztažená na větší plochu: hlavní uzel uprostřed, 4 satelity více u krajů
-- větší a čitelnější karty uzlů a štítky spojů
+LIVE INTERVALY
+--------------
+- topologie / klienti / mesh spoje: 5 s
+- CPU / uptime routerů: 15 s
+- WAN: 30 s
+- WAN persistence na disk: 1x za hodinu + graceful flush
 
-Persistentní volume /data ponechte při aktualizaci stejné.
-Staré položky terminal_pin / terminal_timeout v existujícím /data/config.json nevadí; v3.2 je ignoruje.
+VERZE v6.1.0
+------------
+- cleanup release nad stabilní v6.0.9
+- bez změny klientské, LAN, WAN, OWUT ani reboot logiky
+- sjednocen runtime backend/frontend na 6.1.0
+- sjednoceny cache tagy webových assetů na 6.1.0
+- GitHub Actions publikuje :latest a :6.1.0
+- docker-compose lokální image tag je 6.1.0
+- aktualizována hlavní dokumentace
+- config.example.json už neobsahuje ukázkové heslo root/root
 
-Záměrně zatím nepřeneseno:
-- USB overlay vytvoření/deaktivace (destruktivní práce s diskem)
-- plný Wi-Fi editor jednotlivých UCI rozhraní
-- grafické přetahování pozic uzlů a editor uplinků v UI
+DŮLEŽITÉ PŘI AKTUALIZACI
+------------------------
+Persistentní /data volume ponechte beze změny. Existující /data/config.json,
+/data/backups, /data/wan_usage.json a /data/mesh_operation.json se zachovávají.
+
+SSH BEZPEČNOST
+--------------
+Existující instalace v6.1.0 kvůli zpětné kompatibilitě nemění uložené SSH údaje
+v /data/config.json ani současný runtime fallback. Pokud je na routerech stále
+výchozí nebo slabé heslo, změňte ho a upravte odpovídající SSH konfiguraci iHostu.
+Soubor config.example.json používá pouze zástupnou hodnotu CHANGE_ME.

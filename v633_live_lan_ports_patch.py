@@ -7,6 +7,11 @@ ROOT = Path(os.environ.get("MESH_APP_ROOT", "/app"))
 LIVE = ROOT / "live_topology_v503.py"
 LIVE_JS = ROOT / "static" / "v503_live_topology.js"
 INDEX = ROOT / "templates" / "index.html"
+VERSIONED_MODULES = [
+    ROOT / "topology_inspector_v631.py",
+    ROOT / "lan_port_inspector_v630.py",
+    ROOT / "client_ip_resolver_v632.py",
+]
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -22,35 +27,60 @@ live = LIVE.read_text(encoding="utf-8")
 live = re.sub(r'(?m)^VERSION\s*=\s*["\'][^"\']+["\']\s*$', f'VERSION = "{VERSION}"', live, count=1)
 
 # Každý node má explicitní pole ports i před prvním úspěšným vzorkem / při offline stavu.
-live = re.sub(
-    r'(?m)^(\s*)"lan_client_macs": \[\],$',
-    lambda m: f'{m.group(1)}"lan_client_macs": [],\n{m.group(1)}"ports": [],',
-    live,
-)
+if '"ports": [],' not in live:
+    live = re.sub(
+        r'(?m)^(\s*)"lan_client_macs": \[\],$',
+        lambda m: f'{m.group(1)}"lan_client_macs": [],\n{m.group(1)}"ports": [],',
+        live,
+    )
 
 # Fyzický stav LAN1-LAN4 načteme ve stejném SSH vzorku jako Wi-Fi/FDB, tedy bez dalšího SSH spojení.
 if "__PORTS_BEGIN__" not in live:
     anchor = "printf '__FDB_END__\\n'\n'''"
-    port_shell = r'''printf '__FDB_END__\n'
+    port_shell = """printf '__FDB_END__\\n'
 
-printf '__PORTS_BEGIN__\n'
+printf '__PORTS_BEGIN__\\n'
 for P in lan1 lan2 lan3 lan4; do
   [ -e "/sys/class/net/$P" ] || continue
   OPER="$(cat /sys/class/net/$P/operstate 2>/dev/null || echo unknown)"
   CARRIER="$(cat /sys/class/net/$P/carrier 2>/dev/null || echo 0)"
   SPEED="$(cat /sys/class/net/$P/speed 2>/dev/null || true)"
   case "$SPEED" in ''|*[!0-9]*) SPEED='' ;; esac
-  printf '%s\t%s\t%s\t%s\n' "$P" "$OPER" "$CARRIER" "$SPEED"
+  printf '%s\\t%s\\t%s\\t%s\\n' "$P" "$OPER" "$CARRIER" "$SPEED"
 done
-printf '__PORTS_END__\n'
-'''
-'''
+printf '__PORTS_END__\\n'
+'''"""
     live = replace_once(live, anchor, port_shell, "live port shell collection")
 
 parser_marker = "        # v6.3.3 live physical LAN ports\n"
 if parser_marker not in live:
     anchor = "        try:\n            uptime_s: Optional[int] = int(float(sys_values.get(\"UPTIME\", \"\")))\n"
-    parser = '''        # v6.3.3 live physical LAN ports\n        ports: List[Dict[str, Any]] = []\n        ports_match = re.search(r"__PORTS_BEGIN__\\n(.*?)__PORTS_END__", out, re.S)\n        if ports_match:\n            for raw in ports_match.group(1).splitlines():\n                parts = raw.strip().split("\\t")\n                if len(parts) < 3 or not re.fullmatch(r"lan[1-4]", parts[0], re.I):\n                    continue\n                pname = parts[0].lower()\n                oper = parts[1].strip().lower() or "unknown"\n                carrier = parts[2].strip() == "1"\n                speed = None\n                if len(parts) > 3 and parts[3].strip().isdigit():\n                    value = int(parts[3].strip())\n                    if value > 0:\n                        speed = value\n                ports.append({\n                    "name": pname,\n                    "up": carrier,\n                    "operstate": oper,\n                    "carrier": 1 if carrier else 0,\n                    "speed_mbps": speed,\n                })\n        ports.sort(key=lambda row: int(str(row.get("name") or "lan99")[3:]) if str(row.get("name") or "").startswith("lan") else 99)\n\n'''
+    parser = '''        # v6.3.3 live physical LAN ports
+        ports: List[Dict[str, Any]] = []
+        ports_match = re.search(r"__PORTS_BEGIN__\\n(.*?)__PORTS_END__", out, re.S)
+        if ports_match:
+            for raw in ports_match.group(1).splitlines():
+                parts = raw.strip().split("\\t")
+                if len(parts) < 3 or not re.fullmatch(r"lan[1-4]", parts[0], re.I):
+                    continue
+                pname = parts[0].lower()
+                oper = parts[1].strip().lower() or "unknown"
+                carrier = parts[2].strip() == "1"
+                speed = None
+                if len(parts) > 3 and parts[3].strip().isdigit():
+                    value = int(parts[3].strip())
+                    if value > 0:
+                        speed = value
+                ports.append({
+                    "name": pname,
+                    "up": carrier,
+                    "operstate": oper,
+                    "carrier": 1 if carrier else 0,
+                    "speed_mbps": speed,
+                })
+        ports.sort(key=lambda row: int(str(row.get("name") or "lan99")[3:]) if str(row.get("name") or "").startswith("lan") else 99)
+
+'''
     live = replace_once(live, anchor, parser + anchor, "live port parser")
 
 if '            "ports": ports,\n' not in live:
@@ -62,6 +92,14 @@ if '            "ports": ports,\n' not in live:
     )
 
 LIVE.write_text(live, encoding="utf-8")
+
+# Inspektory/resolver hlásí stejnou release verzi, jejich funkční logika se nemění.
+for module in VERSIONED_MODULES:
+    if not module.exists():
+        continue
+    text = module.read_text(encoding="utf-8")
+    text = re.sub(r'(?m)^VERSION\s*=\s*["\'][^"\']+["\']\s*$', f'VERSION = "{VERSION}"', text, count=1)
+    module.write_text(text, encoding="utf-8")
 
 js = LIVE_JS.read_text(encoding="utf-8")
 js = re.sub(r'__MESH_V\d+_LIVE_TOPOLOGY__', '__MESH_V633_LIVE_TOPOLOGY__', js)

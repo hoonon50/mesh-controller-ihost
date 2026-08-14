@@ -3,6 +3,7 @@ import os
 import re
 
 VERSION = "6.3.0"
+ASSET_REV = "6.3.1"
 ROOT = Path(os.environ.get("MESH_APP_ROOT", "/app"))
 APP = ROOT / "app.py"
 INDEX = ROOT / "templates" / "index.html"
@@ -27,8 +28,8 @@ if marker not in app:
 APP.write_text(app, encoding="utf-8")
 
 html = INDEX.read_text(encoding="utf-8")
-css_tag = f'<link rel="stylesheet" href="/static/v630_lan_port_inspector.css?v={VERSION}">'
-js_tag = f'<script src="/static/v630_lan_port_inspector.js?v={VERSION}"></script>'
+css_tag = f'<link rel="stylesheet" href="/static/v630_lan_port_inspector.css?v={ASSET_REV}">'
+js_tag = f'<script src="/static/v630_lan_port_inspector.js?v={ASSET_REV}"></script>'
 
 html = re.sub(
     r'<link\s+[^>]*href=["\']/static/v630_lan_port_inspector\.css(?:\?v=[^"\']+)?["\'][^>]*>',
@@ -44,5 +45,5 @@ if js_tag not in html:
     html = re.sub(r"</body>", f"  {js_tag}\n</body>", html, count=1, flags=re.I)
 INDEX.write_text(html, encoding="utf-8")
 
-print("v6.3.0: single-click LAN port device inspector enabled")
-print("v6.3.0: double-click LAN blocking remains handled by v6.2.0 component")
+print("v6.3.1: LAN port inspector cache updated; DOWN/BLOKOVÁN single-click disabled")
+print("v6.3.1: double-click LAN blocking remains handled by v6.2.0 component")

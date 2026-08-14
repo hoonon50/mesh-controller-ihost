@@ -2,7 +2,7 @@ from pathlib import Path
 import os
 import re
 
-RELEASE_VERSION = "6.1.0"
+RELEASE_VERSION = "6.2.0"
 ROOT = Path(os.environ.get("MESH_APP_ROOT", "/app"))
 APP = ROOT / "app.py"
 INDEX = ROOT / "templates" / "index.html"
@@ -29,7 +29,7 @@ if LIVE_JS.exists():
     live_js = LIVE_JS.read_text(encoding="utf-8")
     live_js = re.sub(
         r'__MESH_V\d+_LIVE_TOPOLOGY__',
-        '__MESH_V610_LIVE_TOPOLOGY__',
+        '__MESH_V620_LIVE_TOPOLOGY__',
         live_js,
     )
     live_js = re.sub(r'LIVE v6\.0\.9', f'LIVE v{RELEASE_VERSION}', live_js)

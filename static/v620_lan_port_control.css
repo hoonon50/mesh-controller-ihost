@@ -1,0 +1,46 @@
+.port-tile{position:relative;user-select:none}
+.port-tile.v620-port-blocked{
+  opacity:1;
+  border-color:#a84550!important;
+  background:linear-gradient(180deg,#351c22,#24161a)!important;
+  box-shadow:inset 0 3px 0 #ff5d6c!important;
+  cursor:pointer;
+}
+.port-tile.v620-port-blocked::after{
+  content:"";
+  position:absolute;
+  left:9%;
+  top:50%;
+  width:82%;
+  height:3px;
+  border-radius:3px;
+  background:#ff5d6c;
+  box-shadow:0 0 7px #ff5d6c88;
+  transform:rotate(-32deg);
+  transform-origin:center;
+  pointer-events:none;
+}
+.port-tile.v620-port-blocked>strong,
+.port-tile.v620-port-blocked>span,
+.port-tile.v620-port-blocked>b{color:#ff8290!important}
+.port-tile.v620-port-protected:not(.v620-port-blocked){
+  outline:1px solid #4a95ff66;
+  cursor:not-allowed;
+}
+.v620-port-badge{
+  position:absolute;
+  left:5px;
+  right:5px;
+  bottom:4px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:8px;
+  line-height:1.2;
+  font-weight:900;
+  letter-spacing:.25px;
+  color:#8dbaff;
+  pointer-events:none;
+}
+.v620-port-blocked .v620-port-badge{color:#ff8290}
+.v620-port-working{filter:brightness(.75);pointer-events:none}

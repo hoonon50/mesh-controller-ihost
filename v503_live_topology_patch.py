@@ -2,7 +2,7 @@ from pathlib import Path
 import os
 import re
 
-RELEASE_VERSION = "6.3.0"
+RELEASE_VERSION = "6.3.1"
 ROOT = Path(os.environ.get("MESH_APP_ROOT", "/app"))
 APP = ROOT / "app.py"
 INDEX = ROOT / "templates" / "index.html"
@@ -14,7 +14,6 @@ if not APP.exists():
 if not INDEX.exists():
     raise SystemExit(f"v{RELEASE_VERSION}: templates/index.html nenalezen")
 
-# Sjednocení runtime verze bez změny funkční live-topology logiky.
 if LIVE_PY.exists():
     live_py = LIVE_PY.read_text(encoding="utf-8")
     live_py = re.sub(
@@ -29,11 +28,12 @@ if LIVE_JS.exists():
     live_js = LIVE_JS.read_text(encoding="utf-8")
     live_js = re.sub(
         r'__MESH_V\d+_LIVE_TOPOLOGY__',
-        '__MESH_V630_LIVE_TOPOLOGY__',
+        '__MESH_V631_LIVE_TOPOLOGY__',
         live_js,
     )
     live_js = re.sub(r'LIVE v6\.0\.9', f'LIVE v{RELEASE_VERSION}', live_js)
     live_js = re.sub(r'LIVE v6\.2\.0', f'LIVE v{RELEASE_VERSION}', live_js)
+    live_js = re.sub(r'LIVE v6\.3\.0', f'LIVE v{RELEASE_VERSION}', live_js)
     LIVE_JS.write_text(live_js, encoding="utf-8")
 
 app = APP.read_text(encoding="utf-8")
@@ -51,9 +51,6 @@ if marker not in app:
 APP.write_text(app, encoding="utf-8")
 
 html = INDEX.read_text(encoding="utf-8")
-
-# v5.0.7 už nepoužívá v5.0.2 interception timerů. Pokud by byl tag v šabloně
-# z předchozího buildu, explicitně ho odstraníme.
 html = re.sub(
     r'<script\s+[^>]*src=["\']/static/v502_live_refresh_bootstrap\.js(?:\?v=[^"\']+)?["\'][^>]*></script>\s*',
     '', html, flags=re.I,
@@ -70,7 +67,6 @@ html = re.sub(
     r'<script\s+[^>]*src=["\']/static/v503_live_topology\.js\?v=[^"\']+["\'][^>]*></script>',
     js_tag, html, flags=re.I,
 )
-
 if css_tag not in html:
     if "</head>" not in html.lower():
         raise SystemExit(f"v{RELEASE_VERSION}: index.html nemá </head>")
@@ -80,7 +76,6 @@ if js_tag not in html:
         raise SystemExit(f"v{RELEASE_VERSION}: index.html nemá </body>")
     html = re.sub(r"</body>", f"  {js_tag}\n</body>", html, count=1, flags=re.I)
 
-# Cache bust Operation Manageru ponechává jeho vlastní stabilní verzi.
 html = re.sub(
     r'(<link\s+[^>]*href=["\']/static/v500_operation\.css\?v=)[^"\']+(["\'][^>]*>)',
     r'\g<1>6.0.3\2', html, flags=re.I,

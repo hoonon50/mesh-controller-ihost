@@ -1,7 +1,8 @@
 .v503-node:not(.offline){cursor:pointer}
 .v631-topology-inspector{
-  position:fixed;
-  z-index:82;
+  position:fixed!important;
+  z-index:2147483000!important;
+  isolation:isolate;
   max-height:min(560px,calc(100vh - 24px));
   overflow:hidden;
   border:1px solid #3a4350;

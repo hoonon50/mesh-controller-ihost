@@ -3,7 +3,7 @@ import os
 import re
 
 VERSION = "6.2.0"
-ASSET_REV = "6.2.0-r2"
+ASSET_REV = "6.2.0-r3"
 ROOT = Path(os.environ.get("MESH_APP_ROOT", "/app"))
 APP = ROOT / "app.py"
 INDEX = ROOT / "templates" / "index.html"

@@ -21,8 +21,8 @@
   pointer-events:none;
 }
 .port-tile.v620-port-blocked>strong,
-.port-tile.v620-port-blocked>span,
-.port-tile.v620-port-blocked>b{color:#ff8290!important}
+.port-tile.v620-port-blocked>span{color:#ff8290!important}
+.port-tile.v620-port-blocked>b{display:none!important}
 .port-tile.v620-port-protected:not(.v620-port-blocked){
   outline:1px solid #4a95ff66;
   cursor:not-allowed;

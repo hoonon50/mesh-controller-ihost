@@ -43,7 +43,8 @@ RUN mkdir -p /data/backups \
     && python3 /app/v600_wifi_ap_policy_patch.py \
     && python3 /app/v620_lan_port_control_patch.py \
     && python3 /app/v630_lan_port_inspector_patch.py \
-    && python3 -m py_compile /app/app.py /app/mesh_operation_manager.py /app/live_topology_v503.py /app/wifi_ap_policy_v600.py /app/lan_port_control_v620.py /app/lan_port_inspector_v630.py /app/v500_patch.py /app/v503_live_topology_patch.py /app/v600_wifi_ap_policy_patch.py /app/v620_lan_port_control_patch.py /app/v630_lan_port_inspector_patch.py \
+    && python3 /app/v631_topology_inspector_patch.py \
+    && python3 -m py_compile /app/app.py /app/mesh_operation_manager.py /app/live_topology_v503.py /app/wifi_ap_policy_v600.py /app/lan_port_control_v620.py /app/lan_port_inspector_v630.py /app/topology_inspector_v631.py /app/v500_patch.py /app/v503_live_topology_patch.py /app/v600_wifi_ap_policy_patch.py /app/v620_lan_port_control_patch.py /app/v630_lan_port_inspector_patch.py /app/v631_topology_inspector_patch.py \
     && if [ -f /app/owut_manager.py ]; then python3 -m py_compile /app/owut_manager.py; fi \
     && python3 -c "from jinja2 import Environment, FileSystemLoader; Environment(loader=FileSystemLoader('/app/templates')).get_template('index.html')"
 EXPOSE 8088

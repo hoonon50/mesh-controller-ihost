@@ -1,4 +1,4 @@
-OpenWRT MESH CONTROLLER PRO v6.3.1 – SONOFF iHost ARMv7
+OpenWRT MESH CONTROLLER PRO v6.3.2 – SONOFF iHost ARMv7
 
 Web: http://IP_IHOST:8088
 Docker síť: host
@@ -16,6 +16,7 @@ HLAVNÍ FUNKCE
 - LAN port control: 2× klik = runtime BLOKOVÁN / POVOLENÍ bez UCI změn
 - LAN port inspector: 1× klik pouze na UP port = IP / hostname / MAC zařízení
 - topology inspector: 1× klik na ROUTER/MESH = klienti po Wi-Fi pásmu a LAN1–LAN4
+- aktivní MAC→IPv4 resolver pro klienty, kterým běžné tabulky IP nedoplnily
 - chráněné porty pro iHOST 192.168.30.186 a HASSIO 192.168.30.223
 - iHOST CPU / RAM / TEMP
 - DATA a OBNOVENO v horním headeru
@@ -35,22 +36,24 @@ LIVE INTERVALY
 - CPU / uptime routerů: 15 s
 - WAN: 30 s
 - WAN persistence na disk: 1x za hodinu + graceful flush
+- aktivní MAC→IPv4 sweep nejvýše 1x za 60 s a pouze při nalezené MAC bez IPv4
 
-VERZE v6.3.1
+VERZE v6.3.2
 ------------
-- DOWN a BLOKOVÁN LAN port už na 1× klik neotevírá informační panel
-- UP LAN port dál používá 1× klik pro IP / hostname / MAC
+- při známé klientské MAC bez IPv4 se už Controller nespokojí s textem IP neznámá
+- nejdřív použije aktuální neighbor/ARP tabulku, DHCP lease a známý snapshot klientů
+- pokud IPv4 stále chybí, MAIN router provede krátký aktivní /24 ping sweep pro obnovení ARP/neighbour tabulky
+- po sweepu se MAC znovu páruje s IPv4
+- resolver je společný pro TOPOLOGII i LAN port inspector
+- resolver nic nezapisuje na SD; krátká úspěšná MAC→IPv4 cache je pouze v RAM
+- aktivní sweep je rate-limitovaný, aby se nespouštěl při každém kliknutí
+- pokud zařízení objektivně žádnou IPv4 nemá, Controller ji nevymýšlí
+- DOWN a BLOKOVÁN LAN port na 1× klik dál nic neotevírá
 - 2× klik na LAN port dál blokuje/povoluje port podle v6.2.0
-- 1× klik na online dlaždici ROUTER/MESH v TOPOLOGII otevře klientský panel
-- klienti jsou rozděleni do sekcí Wi-Fi 5 GHz, Wi-Fi 2.4 GHz a LAN1–LAN4
-- prázdné sekce se nezobrazují
-- každé zařízení zobrazuje IP, hostname a menší MAC adresu
-- LAN skupina se určuje z bridge FDB konkrétního fyzického lanX
-- Wi-Fi skupina vychází z živých hostapd klientů současné topologie
-- DHCP/neighbor/známí klienti doplňují IP a hostname
+- ochrana iHOST/HASSIO a /data/lan_port_state.json zůstávají beze změny
 - OpenWrt UCI konfigurace se nemění
-- GitHub Actions publikuje :latest a :6.3.1
-- docker-compose lokální image tag je 6.3.1
+- GitHub Actions publikuje :latest a :6.3.2
+- docker-compose lokální image tag je 6.3.2
 
 DŮLEŽITÉ PŘI AKTUALIZACI
 ------------------------

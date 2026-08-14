@@ -3,6 +3,7 @@ import os
 import re
 
 VERSION = "6.3.1"
+ASSET_REV = "6.3.1-r2"
 ROOT = Path(os.environ.get("MESH_APP_ROOT", "/app"))
 APP = ROOT / "app.py"
 INDEX = ROOT / "templates" / "index.html"
@@ -27,8 +28,8 @@ if marker not in app:
 APP.write_text(app, encoding="utf-8")
 
 html = INDEX.read_text(encoding="utf-8")
-css_tag = f'<link rel="stylesheet" href="/static/v631_topology_inspector.css?v={VERSION}">'
-js_tag = f'<script src="/static/v631_topology_inspector.js?v={VERSION}"></script>'
+css_tag = f'<link rel="stylesheet" href="/static/v631_topology_inspector.css?v={ASSET_REV}">'
+js_tag = f'<script src="/static/v631_topology_inspector.js?v={ASSET_REV}"></script>'
 
 html = re.sub(
     r'<link\s+[^>]*href=["\']/static/v631_topology_inspector\.css(?:\?v=[^"\']+)?["\'][^>]*>',
@@ -45,3 +46,4 @@ if js_tag not in html:
 INDEX.write_text(html, encoding="utf-8")
 
 print("v6.3.1: topology node client inspector enabled")
+print(f"v6.3.1: topology inspector asset rev {ASSET_REV}")

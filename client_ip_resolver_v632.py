@@ -11,7 +11,7 @@ from mesh_core import controller
 VERSION = "6.3.2"
 MAIN_ROUTER_IP = os.environ.get("MESH_MAIN_ROUTER_IP", "192.168.30.1")
 SWEEP_SECONDS = max(15, int(os.environ.get("MESH_IP_RESOLVE_SWEEP_SECONDS", "60")))
-CACHE_SECONDS = max(60, int(os.environ.get("MESH_IP_RESOLVE_CACHE_SECONDS", "900")))
+CACHE_SECONDS = max(60, int(os.environ.get("MESH_IP_RESOLVE_CACHE_SECONDS", "300")))
 SWEEP_BATCH = min(64, max(8, int(os.environ.get("MESH_IP_RESOLVE_SWEEP_BATCH", "48"))))
 ACTIVE_SWEEP = os.environ.get("MESH_IP_RESOLVE_ACTIVE", "1").strip().lower() not in {"0", "false", "no", "off"}
 
@@ -35,6 +35,8 @@ def _normalize_macs(values: Iterable[str]) -> set[str]:
 def _parse_tables(text: str) -> Dict[str, str]:
     result: Dict[str, str] = {}
 
+    # Aktuální neighbour/ARP záznam má prioritu. Je čerstvější než případná
+    # starší DHCP lease stejné MAC, například po přechodu zařízení na statickou IP.
     neigh_match = re.search(r"__NEIGH_BEGIN__\n(.*?)\n__NEIGH_END__", text, re.S)
     if neigh_match:
         for raw in neigh_match.group(1).splitlines():
@@ -58,8 +60,8 @@ def _parse_tables(text: str) -> Dict[str, str]:
             mac = parts[1].lower()
             ip = parts[2]
             if MAC_RE.fullmatch(mac) and re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip):
-                # DHCP lease je nejpřesnější dlouhodobý MAC -> IPv4 zdroj.
-                result[mac] = ip
+                # DHCP doplní MAC, kterou aktuální neighbour tabulka nezná.
+                result.setdefault(mac, ip)
 
     return result
 
@@ -156,7 +158,7 @@ def resolve_client_ipv4(macs: Iterable[str], *, allow_active_sweep: bool = True)
     """Resolve known client MAC addresses to IPv4 without writing to /data.
 
     Resolution order:
-      1) current main-router ARP/neighbour table and DHCP leases,
+      1) current main-router ARP/neighbour table, then DHCP leases,
       2) rate-limited active /24 ARP refresh via ping sweep,
       3) short-lived RAM cache from previous successful resolution.
     """

@@ -8,6 +8,7 @@ TOPOLOGY = ROOT / "topology_inspector_v631.py"
 LAN = ROOT / "lan_port_inspector_v630.py"
 LIVE = ROOT / "live_topology_v503.py"
 LIVE_JS = ROOT / "static" / "v503_live_topology.js"
+INDEX = ROOT / "templates" / "index.html"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -97,7 +98,7 @@ lan = replace_once(
 LAN.write_text(lan, encoding="utf-8")
 
 
-# Release/runtime version: funkční topology collector zůstává stejný.
+# Release/runtime verze: funkční topology collector zůstává stejný.
 if LIVE.exists():
     live = LIVE.read_text(encoding="utf-8")
     live = re.sub(r'(?m)^VERSION\s*=\s*["\'][^"\']+["\']\s*$', f'VERSION = "{VERSION}"', live, count=1)
@@ -108,6 +109,21 @@ if LIVE_JS.exists():
     js = re.sub(r'__MESH_V\d+_LIVE_TOPOLOGY__', '__MESH_V632_LIVE_TOPOLOGY__', js)
     js = re.sub(r'LIVE v\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?', f'LIVE v{VERSION}', js)
     LIVE_JS.write_text(js, encoding="utf-8")
+
+# Vynutí načtení aktuálního live-topology assetu i při upgrade z v6.3.1.
+if INDEX.exists():
+    html = INDEX.read_text(encoding="utf-8")
+    html = re.sub(
+        r'(/static/v503_live_topology\.css\?v=)[^"\']+',
+        rf'\g<1>{VERSION}',
+        html,
+    )
+    html = re.sub(
+        r'(/static/v503_live_topology\.js\?v=)[^"\']+',
+        rf'\g<1>{VERSION}',
+        html,
+    )
+    INDEX.write_text(html, encoding="utf-8")
 
 print(f"v{VERSION}: active MAC -> IPv4 resolver integrated into topology and LAN inspectors")
 print(f"v{VERSION}: unresolved MACs are actively refreshed through MAIN router ARP/neighbour discovery")

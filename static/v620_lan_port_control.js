@@ -43,14 +43,15 @@
       tile.classList.toggle('v620-port-blocked', blocked);
       tile.classList.toggle('v620-port-protected', protectedBy.length > 0);
 
+      const wantedBadge = blocked ? 'BLOKOVÁN' : (protectedBy.length ? `CHRÁNĚN · ${protectedBy.join(' + ')}` : '');
       let badge = tile.querySelector('.v620-port-badge');
-      if (blocked || protectedBy.length) {
+      if (wantedBadge) {
         if (!badge) {
           badge = document.createElement('div');
           badge.className = 'v620-port-badge';
           tile.appendChild(badge);
         }
-        badge.textContent = blocked ? 'BLOKOVÁN' : `CHRÁNĚN · ${protectedBy.join(' + ')}`;
+        if (badge.textContent !== wantedBadge) badge.textContent = wantedBadge;
       } else if (badge) {
         badge.remove();
       }
@@ -58,7 +59,8 @@
       const status = tile.querySelector(':scope > b');
       if (status) {
         if (!status.dataset.v620Original) status.dataset.v620Original = status.textContent || '';
-        status.textContent = blocked ? 'BLOKOVÁN' : status.dataset.v620Original;
+        const wantedStatus = blocked ? 'BLOKOVÁN' : status.dataset.v620Original;
+        if (status.textContent !== wantedStatus) status.textContent = wantedStatus;
       }
 
       if (blocked) {
@@ -115,7 +117,6 @@
         throw new Error(data.error || 'Změnu LAN portu se nepodařilo provést.');
       }
       await loadState();
-      // Původní status si aktualizuje carrier/operstate; toto urychlí překreslení.
       try { await fetch('/api/refresh', {method: 'POST'}); } catch (_err) {}
     } catch (err) {
       alert(err.message || 'Změnu LAN portu se nepodařilo provést.');
@@ -133,8 +134,6 @@
     toggle(tile);
   }, true);
 
-  // Původní renderer dlaždice při refreshi nahrazuje. MutationObserver zajistí,
-  // že se BLOKOVÁN/CHRÁNĚN vrátí okamžitě bez čekání na další poll.
   const observer = new MutationObserver(() => decorate());
   const start = () => {
     const grid = document.getElementById('portsGrid');

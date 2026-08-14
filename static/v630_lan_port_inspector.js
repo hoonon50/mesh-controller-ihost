@@ -32,6 +32,12 @@
     return {ip, port, routerName, speed};
   }
 
+  function tileInspectable(tile) {
+    if (!tile || tile.classList.contains('v620-port-blocked')) return false;
+    const status = (tile.querySelector(':scope > b')?.textContent || '').trim().toUpperCase();
+    return status === 'UP';
+  }
+
   function cancelSingleClick() {
     if (clickTimer) clearTimeout(clickTimer);
     clickTimer = null;
@@ -53,7 +59,7 @@
       </div>
       <div class="v630-inspector-body" data-k="body"></div>`;
     document.body.appendChild(panel);
-    panel.querySelector('.v630-inspector-close')?.addEventListener('click', () => closePanel());
+    panel.querySelector('.v630-inspector-close')?.addEventListener('click', closePanel);
     return panel;
   }
 
@@ -74,48 +80,36 @@
     let left = rect.left + rect.width / 2 - measured.width / 2;
     left = Math.max(12, Math.min(left, window.innerWidth - measured.width - 12));
     let top = rect.bottom + 9;
-    if (top + measured.height > window.innerHeight - 12) {
-      top = Math.max(12, rect.top - measured.height - 9);
-    }
+    if (top + measured.height > window.innerHeight - 12) top = Math.max(12, rect.top - measured.height - 9);
     panel.style.left = `${Math.round(left)}px`;
     panel.style.top = `${Math.round(top)}px`;
   }
 
-  function loadingBody(blocked) {
-    return `<div class="v630-inspector-loading">Načítám zařízení…${blocked ? '<small>Port je aktuálně BLOKOVÁN.</small>' : ''}</div>`;
-  }
-
-  function renderDevices(data, tile) {
+  function renderDevices(data) {
     const body = panel?.querySelector('[data-k="body"]');
     if (!body) return;
     const devices = Array.isArray(data.devices) ? data.devices : [];
-    const blocked = tile.classList.contains('v620-port-blocked');
     const speed = data.speed_mbps ? `${data.speed_mbps} Mbit/s` : (data.up ? 'RYCHLOST ?' : '—');
-
     if (!devices.length) {
-      body.innerHTML = `
-        <div class="v630-inspector-empty">
-          <strong>${blocked ? 'Port je BLOKOVÁN' : 'Žádné zařízení'}</strong>
-          <span>${blocked ? 'Po odpojení mohou FDB/ARP záznamy postupně zmizet.' : 'Na tomto fyzickém portu není nyní nalezena žádná klientská MAC/IP.'}</span>
-        </div>`;
-    } else {
-      body.innerHTML = `
-        <div class="v630-device-summary"><span>${devices.length} zařízení</span><b>${esc(speed)}</b></div>
-        <div class="v630-device-list">
-          ${devices.map(device => `
-            <div class="v630-device-row">
-              <div class="v630-device-main">
-                <strong>${esc(device.ip || 'IP neznámá')}</strong>
-                <span>${esc(device.hostname || 'hostname neznámý')}</span>
-              </div>
-              <code>${esc(device.mac || '—')}</code>
-            </div>`).join('')}
-        </div>`;
+      body.innerHTML = '<div class="v630-inspector-empty"><strong>Žádné zařízení</strong><span>Na tomto fyzickém portu není nyní nalezena žádná klientská MAC/IP.</span></div>';
+      return;
     }
+    body.innerHTML = `
+      <div class="v630-device-summary"><span>${devices.length} zařízení</span><b>${esc(speed)}</b></div>
+      <div class="v630-device-list">
+        ${devices.map(device => `
+          <div class="v630-device-row">
+            <div class="v630-device-main">
+              <strong>${esc(device.ip || 'IP neznámá')}</strong>
+              <span>${esc(device.hostname || 'hostname neznámý')}</span>
+            </div>
+            <code>${esc(device.mac || '—')}</code>
+          </div>`).join('')}
+      </div>`;
   }
 
   async function openFor(tile) {
-    if (!document.body.contains(tile)) return;
+    if (!document.body.contains(tile) || !tileInspectable(tile)) return;
     const info = tileInfo(tile);
     if (!info) return;
     const seq = ++requestSeq;
@@ -125,7 +119,7 @@
     const body = p.querySelector('[data-k="body"]');
     if (title) title.textContent = `${info.routerName} · ${info.port.toUpperCase()}`;
     if (subtitle) subtitle.textContent = `${info.ip} · ${info.speed}`;
-    if (body) body.innerHTML = loadingBody(tile.classList.contains('v620-port-blocked'));
+    if (body) body.innerHTML = '<div class="v630-inspector-loading">Načítám zařízení…</div>';
     positionPanel(tile);
 
     try {
@@ -134,13 +128,15 @@
       const data = await response.json().catch(() => ({}));
       if (seq !== requestSeq) return;
       if (!response.ok || !data.ok) throw new Error(data.error || 'Zařízení na portu se nepodařilo načíst.');
-      renderDevices(data, tile);
+      if (!data.up) {
+        closePanel();
+        return;
+      }
+      renderDevices(data);
       positionPanel(tile);
     } catch (err) {
       if (seq !== requestSeq) return;
-      if (body) {
-        body.innerHTML = `<div class="v630-inspector-error"><strong>Nelze načíst port</strong><span>${esc(err.message || 'Neznámá chyba')}</span></div>`;
-      }
+      if (body) body.innerHTML = `<div class="v630-inspector-error"><strong>Nelze načíst port</strong><span>${esc(err.message || 'Neznámá chyba')}</span></div>`;
       positionPanel(tile);
     }
   }
@@ -148,7 +144,11 @@
   document.addEventListener('click', event => {
     const tile = event.target.closest?.('.router-ports .port-tile');
     if (tile) {
-      // Druhý click dorazí před dblclick. Zruší tedy pending 1× click okamžitě.
+      if (!tileInspectable(tile)) {
+        cancelSingleClick();
+        closePanel();
+        return;
+      }
       if (Number(event.detail || 1) >= 2) {
         cancelSingleClick();
         return;
@@ -170,9 +170,11 @@
     if (!tile) return;
     cancelSingleClick();
     closePanel();
-    // Samotné blokování dál provádí v6.2.0 LAN Port Control.
   }, true);
 
-  window.addEventListener('resize', () => closePanel(), {passive: true});
-  window.addEventListener('scroll', () => closePanel(), {passive: true});
+  window.addEventListener('resize', closePanel, {passive: true});
+  window.addEventListener('scroll', event => {
+    if (event.target?.closest?.('#v630LanInspector')) return;
+    closePanel();
+  }, {passive: true, capture: true});
 })();

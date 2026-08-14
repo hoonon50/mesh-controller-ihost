@@ -1,4 +1,4 @@
-OpenWRT MESH CONTROLLER PRO v6.3.0 – SONOFF iHost ARMv7
+OpenWRT MESH CONTROLLER PRO v6.3.1 – SONOFF iHost ARMv7
 
 Web: http://IP_IHOST:8088
 Docker síť: host
@@ -14,7 +14,8 @@ HLAVNÍ FUNKCE
 - oddělené počty 2.4 GHz / 5 GHz / LAN / celkem
 - LAN klienti z fyzického FDB s 45s stabilizací pouze v RAM
 - LAN port control: 2× klik = runtime BLOKOVÁN / POVOLENÍ bez UCI změn
-- LAN port inspector: 1× klik = IP / hostname / MAC zařízení na konkrétním LAN portu
+- LAN port inspector: 1× klik pouze na UP port = IP / hostname / MAC zařízení
+- topology inspector: 1× klik na ROUTER/MESH = klienti po Wi-Fi pásmu a LAN1–LAN4
 - chráněné porty pro iHOST 192.168.30.186 a HASSIO 192.168.30.223
 - iHOST CPU / RAM / TEMP
 - DATA a OBNOVENO v horním headeru
@@ -35,18 +36,21 @@ LIVE INTERVALY
 - WAN: 30 s
 - WAN persistence na disk: 1x za hodinu + graceful flush
 
-VERZE v6.3.0
+VERZE v6.3.1
 ------------
-- 1× klik na LAN1–LAN4 otevře informační panel zařízení na portu
-- bridge FDB určí MAC adresy na konkrétním fyzickém lanX
-- ARP/neighbor doplní IPv4 adresu
-- DHCP lease a známí klienti Controlleru doplní hostname
-- port se switchem může zobrazit více zařízení
-- 2× klik dál okamžitě blokuje/povoluje port podle v6.2.0
-- 1× klik funguje i pro CHRÁNĚN · iHOST a CHRÁNĚN · HASSIO
-- OpenWrt UCI konfigurace se při blokování nemění
-- GitHub Actions publikuje :latest a :6.3.0
-- docker-compose lokální image tag je 6.3.0
+- DOWN a BLOKOVÁN LAN port už na 1× klik neotevírá informační panel
+- UP LAN port dál používá 1× klik pro IP / hostname / MAC
+- 2× klik na LAN port dál blokuje/povoluje port podle v6.2.0
+- 1× klik na online dlaždici ROUTER/MESH v TOPOLOGII otevře klientský panel
+- klienti jsou rozděleni do sekcí Wi-Fi 5 GHz, Wi-Fi 2.4 GHz a LAN1–LAN4
+- prázdné sekce se nezobrazují
+- každé zařízení zobrazuje IP, hostname a menší MAC adresu
+- LAN skupina se určuje z bridge FDB konkrétního fyzického lanX
+- Wi-Fi skupina vychází z živých hostapd klientů současné topologie
+- DHCP/neighbor/známí klienti doplňují IP a hostname
+- OpenWrt UCI konfigurace se nemění
+- GitHub Actions publikuje :latest a :6.3.1
+- docker-compose lokální image tag je 6.3.1
 
 DŮLEŽITÉ PŘI AKTUALIZACI
 ------------------------

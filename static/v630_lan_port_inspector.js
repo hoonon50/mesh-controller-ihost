@@ -100,7 +100,7 @@
         </div>`;
     } else {
       body.innerHTML = `
-        <div class="v630-device-summary"><span>${devices.length} ${devices.length === 1 ? 'zařízení' : 'zařízení'}</span><b>${esc(speed)}</b></div>
+        <div class="v630-device-summary"><span>${devices.length} zařízení</span><b>${esc(speed)}</b></div>
         <div class="v630-device-list">
           ${devices.map(device => `
             <div class="v630-device-row">
@@ -174,5 +174,5 @@
   }, true);
 
   window.addEventListener('resize', () => closePanel(), {passive: true});
-  window.addEventListener('scroll', () => closePanel(), {passive: true, capture: true});
+  window.addEventListener('scroll', () => closePanel(), {passive: true});
 })();

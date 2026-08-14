@@ -1,3 +1,5 @@
+.router-ports .port-tile{cursor:pointer}
+.port-tile.v620-port-protected:not(.v620-port-blocked){cursor:pointer}
 .v630-lan-inspector{
   position:fixed;
   z-index:80;

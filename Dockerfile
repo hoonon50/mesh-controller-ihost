@@ -18,7 +18,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MESH_WIFI_MAX_INACTIVITY=60 \
     MESH_WIFI_SKIP_INACTIVITY_POLL=0 \
     MESH_LAN_PORT_WATCH_SECONDS=5 \
-    MESH_LAN_PROTECT_SCAN_SECONDS=30
+    MESH_LAN_PROTECT_SCAN_SECONDS=30 \
+    MESH_IP_RESOLVE_ACTIVE=1 \
+    MESH_IP_RESOLVE_SWEEP_SECONDS=60 \
+    MESH_IP_RESOLVE_CACHE_SECONDS=300 \
+    MESH_IP_RESOLVE_SWEEP_BATCH=48
 
 WORKDIR /app
 RUN apt-get update \
@@ -44,7 +48,8 @@ RUN mkdir -p /data/backups \
     && python3 /app/v620_lan_port_control_patch.py \
     && python3 /app/v630_lan_port_inspector_patch.py \
     && python3 /app/v631_topology_inspector_patch.py \
-    && python3 -m py_compile /app/app.py /app/mesh_operation_manager.py /app/live_topology_v503.py /app/wifi_ap_policy_v600.py /app/lan_port_control_v620.py /app/lan_port_inspector_v630.py /app/topology_inspector_v631.py /app/v500_patch.py /app/v503_live_topology_patch.py /app/v600_wifi_ap_policy_patch.py /app/v620_lan_port_control_patch.py /app/v630_lan_port_inspector_patch.py /app/v631_topology_inspector_patch.py \
+    && python3 /app/v632_client_ip_resolver_patch.py \
+    && python3 -m py_compile /app/app.py /app/mesh_operation_manager.py /app/live_topology_v503.py /app/wifi_ap_policy_v600.py /app/lan_port_control_v620.py /app/lan_port_inspector_v630.py /app/topology_inspector_v631.py /app/client_ip_resolver_v632.py /app/v500_patch.py /app/v503_live_topology_patch.py /app/v600_wifi_ap_policy_patch.py /app/v620_lan_port_control_patch.py /app/v630_lan_port_inspector_patch.py /app/v631_topology_inspector_patch.py /app/v632_client_ip_resolver_patch.py \
     && if [ -f /app/owut_manager.py ]; then python3 -m py_compile /app/owut_manager.py; fi \
     && python3 -c "from jinja2 import Environment, FileSystemLoader; Environment(loader=FileSystemLoader('/app/templates')).get_template('index.html')"
 EXPOSE 8088

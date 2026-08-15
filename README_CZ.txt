@@ -1,4 +1,4 @@
-OpenWRT MESH CONTROLLER PRO v6.3.5 – SONOFF iHost ARMv7
+OpenWRT MESH CONTROLLER PRO v6.3.6 – SONOFF iHost ARMv7
 
 Web: http://IP_IHOST:8088
 Docker síť: host
@@ -40,24 +40,24 @@ LIVE INTERVALY
 - aktivní MAC→IPv4 sweep nejvýše 1x za 60 s a pouze při nalezené MAC bez IPv4
 - během OWUT čekání heartbeat do operačního logu přibližně každých 30 s
 
-VERZE v6.3.5
+VERZE v6.3.6
 ------------
-- oprava bezpečného návratu USB Extrootu na hlavním ROUTERu po OWUT sysupgrade
-- před sysupgrade musí být /overlay skutečně na /dev/sd* a musí být dostupné jeho živé UUID
-- UUID se nikdy nehardcoduje; bere se z aktuálně připojeného USB overlaye těsně před aktualizací
-- po prvním sysupgrade bootu Controller zjistí, zda ROUTER běží z interního rootfs_data/UBIFS nebo už z USB
-- pokud je první boot interní, Controller zapíše do právě aktivního interního /etc/config/fstab sekci fstab.extroot s uloženým UUID, target=/overlay, fstype=ext4 a enabled=1
-- zapsaná interní Extroot konfigurace se přes SSH okamžitě ověří ještě PŘED druhým rebootem
-- pokud USB s očekávaným UUID není vidět nebo kontrola fstab selže, druhý reboot se bezpečně neprovede a ROUTER zůstane dostupný na interním overlayi
-- teprve po ověření interního fstab se provede druhý reboot požadovaný OpenWrt pro Extroot po sysupgrade
-- po druhém bootu musí být /overlay na USB a UUID musí přesně odpovídat hodnotě před aktualizací
-- při selhání se do reportu přidá diagnostika overlay / fstab / block info / extroot boot log
-- pokud je USB Extroot aktivní už po prvním bootu a UUID sedí, zbytečný druhý reboot se neprovádí
-- v6.3.4 OWUT launcher s PID/log/heartbeat zůstává beze změny
+- navazuje na bezpečný návrat USB Extrootu z v6.3.5
+- pokud OWUT preflight na všech 5 routerech hlásí „není co aktualizovat“, skončí operace bez zálohy, bez sysupgrade, bez rebootu a bez jakéhokoli zápisu do /overlay nebo fstab
+- no-update log i Gmail report výslovně uvádí, že USB Extroot zůstal beze změny
+- před druhým rebootem hlavního ROUTERu se na prvním interním bootu ověří nový OpenWrt release/revision a dostupnost příkazů uci, block, blkid a owut
+- před druhým rebootem se ověří nainstalované balíčky block-mount, kmod-fs-ext4, kmod-usb-storage a kmod-usb-storage-uas
+- před druhým rebootem se ověří podpora ext4, skutečný /dev/sd* blokový disk, přesná shoda živého UUID a TYPE=ext4
+- pokud kterákoli first-boot kontrola selže, fstab se neaktivuje pro druhý boot a druhý reboot se neprovede; ROUTER zůstane dostupný přes SSH na interním overlayi
+- po úspěšné first-boot kontrole se teprve obnoví a ověří interní fstab.extroot a provede druhý reboot
+- po druhém bootu zůstává kontrola /overlay na USB a přesné shody UUID z v6.3.5
+- všechny OWUT i Persistent Operation Manager Gmail reporty používají jeden společný iHost CPU/SoC thermal/hwmon reader
+- společný iHost temperature reader čte jen skutečné thermal_zone*/temp a hwmon temp*_input hodnoty a krátce opakuje čtení při dočasném N/A
+- v6.3.4 spolehlivý OWUT launcher s PID/log/heartbeat zůstává beze změny
 - v6.3.3 live LAN porty, blokování, ochrana iHOST/HASSIO a klientské inspektory se nemění
-- žádné periodické UCI zápisy; jediný servisní UCI zápis je obnova interního fstab během ROUTER sysupgrade mezi prvním a druhým bootem
-- GitHub Actions publikuje :latest a :6.3.5
-- docker-compose lokální image tag je 6.3.5
+- žádné nové periodické zápisy do OpenWrt UCI ani na SD
+- GitHub Actions publikuje :latest a :6.3.6
+- docker-compose lokální image tag je 6.3.6
 
 DŮLEŽITÉ PŘI AKTUALIZACI
 ------------------------

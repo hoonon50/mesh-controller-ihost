@@ -1,4 +1,4 @@
-OpenWRT MESH CONTROLLER PRO v6.3.3 – SONOFF iHost ARMv7
+OpenWRT MESH CONTROLLER PRO v6.3.4 – SONOFF iHost ARMv7
 
 Web: http://IP_IHOST:8088
 Docker síť: host
@@ -38,22 +38,24 @@ LIVE INTERVALY
 - WAN: 30 s
 - WAN persistence na disk: 1x za hodinu + graceful flush
 - aktivní MAC→IPv4 sweep nejvýše 1x za 60 s a pouze při nalezené MAC bez IPv4
+- během OWUT čekání heartbeat do operačního logu přibližně každých 30 s
 
-VERZE v6.3.3
+VERZE v6.3.4
 ------------
-- dlaždice jednotlivých LAN portů už nepoužívají pro UP/DOWN a rychlost pouze starší /api/status snapshot
-- fyzický carrier, operstate a speed LAN1–LAN4 se čtou v tomtéž 5s SSH vzorku jako live topologie
-- nevzniká žádné další SSH spojení jen kvůli portům
-- live payload doplňuje u každého routeru pole ports
-- existující LAN dlaždice se aktualizují přímo na místě každých 5 s
-- po starém 30s překreslení portsGrid se poslední live stav ihned znovu aplikuje
-- blokovací vrstva v6.2.0 dostává současně aktualizovaný původní UP/DOWN stav, takže nevrací staré hodnoty
-- červené BLOKOVÁN, ochrana iHOST/HASSIO a 2× klik zůstávají beze změny
-- DOWN/BLOKOVÁN port dál na 1× klik neotevírá inspector
-- aktivní MAC→IPv4 resolver z v6.3.2 zůstává beze změny
-- žádné nové zápisy na SD a žádné změny OpenWrt UCI
-- GitHub Actions publikuje :latest a :6.3.3
-- docker-compose lokální image tag je 6.3.3
+- oprava falešného STARTED při automatickém/ručním OWUT upgradu
+- background launcher už nezávisí na externím příkazu nohup
+- child shell ignoruje SIGHUP přímo přes BusyBox/POSIX ash `trap '' HUP`
+- při startu se vytváří /tmp/mesh-owut.pid a /tmp/mesh-owut.log
+- po 2 sekundách se ověří, že proces skutečně běží nebo už vytvořil exit kód
+- pokud launcher selže, operace skončí během několika sekund místo čekání 20 minut
+- watchdog kontroluje PID, exit kód a poslední řádky OWUT logu
+- během dlouhého buildu zapisuje stav `OWUT běží MM:SS / 20:00` a poslední relevantní řádek logu
+- timeout nyní obsahuje poslední dostupné řádky OWUT logu pro diagnostiku
+- automatický Gmail report zůstává zachovaný i při chybě OWUT
+- v6.3.3 live LAN porty, blokování, ochrana iHOST/HASSIO a klientské inspektory se nemění
+- žádné nové zápisy do OpenWrt UCI a žádné nové pravidelné zápisy na SD
+- GitHub Actions publikuje :latest a :6.3.4
+- docker-compose lokální image tag je 6.3.4
 
 DŮLEŽITÉ PŘI AKTUALIZACI
 ------------------------

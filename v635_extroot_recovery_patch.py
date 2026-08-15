@@ -22,7 +22,7 @@ text = OWUT.read_text(encoding="utf-8")
 # Helper se používá výhradně po prvním bootu ROUTERu po sysupgrade, kdy OpenWrt
 # standardně běží z interního rootfs_data/UBIFS. Na aktivní USB extroot se tím
 # nesahá. UUID se vždy bere z živého /overlay před začátkem upgradu.
-helper = r'''
+helper = r"""
 def _restore_extroot_config_after_first_boot(controller, expected_uuid: str) -> Tuple[bool, str]:
     expected_uuid = str(expected_uuid or "").strip()
     if not re.fullmatch(r"[0-9A-Fa-f-]{16,64}", expected_uuid):
@@ -98,7 +98,7 @@ logread 2>/dev/null | grep -iE 'extroot|mount_root|block:|sda|overlay' | tail -n
         return value[-3500:]
     except Exception as exc:
         return f"Diagnostiku se nepodařilo načíst: {exc}"
-'''
+"""
 
 anchor = "\ndef _ensure_owut(controller, ip: str) -> Tuple[bool, str]:\n"
 if "def _restore_extroot_config_after_first_boot" not in text:

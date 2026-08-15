@@ -1,4 +1,4 @@
-OpenWRT MESH CONTROLLER PRO v6.3.6 – SONOFF iHost ARMv7
+OpenWRT MESH CONTROLLER PRO v6.3.7 – SONOFF iHost ARMv7
 
 Web: http://IP_IHOST:8088
 Docker síť: host
@@ -40,24 +40,20 @@ LIVE INTERVALY
 - aktivní MAC→IPv4 sweep nejvýše 1x za 60 s a pouze při nalezené MAC bez IPv4
 - během OWUT čekání heartbeat do operačního logu přibližně každých 30 s
 
-VERZE v6.3.6
+VERZE v6.3.7
 ------------
-- navazuje na bezpečný návrat USB Extrootu z v6.3.5
-- pokud OWUT preflight na všech 5 routerech hlásí „není co aktualizovat“, skončí operace bez zálohy, bez sysupgrade, bez rebootu a bez jakéhokoli zápisu do /overlay nebo fstab
-- no-update log i Gmail report výslovně uvádí, že USB Extroot zůstal beze změny
-- před druhým rebootem hlavního ROUTERu se na prvním interním bootu ověří nový OpenWrt release/revision a dostupnost příkazů uci, block, blkid a owut
-- před druhým rebootem se ověří nainstalované balíčky block-mount, kmod-fs-ext4, kmod-usb-storage a kmod-usb-storage-uas
-- před druhým rebootem se ověří podpora ext4, skutečný /dev/sd* blokový disk, přesná shoda živého UUID a TYPE=ext4
-- pokud kterákoli first-boot kontrola selže, fstab se neaktivuje pro druhý boot a druhý reboot se neprovede; ROUTER zůstane dostupný přes SSH na interním overlayi
-- po úspěšné first-boot kontrole se teprve obnoví a ověří interní fstab.extroot a provede druhý reboot
-- po druhém bootu zůstává kontrola /overlay na USB a přesné shody UUID z v6.3.5
-- všechny OWUT i Persistent Operation Manager Gmail reporty používají jeden společný iHost CPU/SoC thermal/hwmon reader
-- společný iHost temperature reader čte jen skutečné thermal_zone*/temp a hwmon temp*_input hodnoty a krátce opakuje čtení při dočasném N/A
-- v6.3.4 spolehlivý OWUT launcher s PID/log/heartbeat zůstává beze změny
-- v6.3.3 live LAN porty, blokování, ochrana iHOST/HASSIO a klientské inspektory se nemění
+- běžný rolling reboot má vlastní pořadí: MESH2 -> MESH3 -> MESH4 -> ROUTER -> MESH1
+- MESH1 se při běžném rebootu restartuje úplně poslední, aby iHost po návratu LAN linku vstoupil do už běžící sítě s ROUTER/DHCP/DNS/gateway
+- OWUT/sysupgrade pořadí se nemění: MESH2 -> MESH3 -> MESH4 -> MESH1 -> ROUTER
+- změna reboot pořadí platí pro Persistent Operation Manager i /api/owut/reboot target=all
+- scheduler automatických OWUT aktualizací se v této verzi nemění
+- bezpečnostní USB Extroot logika v6.3.5/v6.3.6 zůstává beze změny
+- v Gmail reportech se označení iHost CPU / SoC mění na iHost teplota
+- samotný společný iHost temperature reader z v6.3.6 se nemění
+- pokud OWUT nemá dostupný sysupgrade, zůstává no-update větev bez flashování, rebootu a zápisu do Extrootu
 - žádné nové periodické zápisy do OpenWrt UCI ani na SD
-- GitHub Actions publikuje :latest a :6.3.6
-- docker-compose lokální image tag je 6.3.6
+- GitHub Actions publikuje :latest a :6.3.7
+- docker-compose lokální image tag je 6.3.7
 
 DŮLEŽITÉ PŘI AKTUALIZACI
 ------------------------

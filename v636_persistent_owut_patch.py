@@ -149,7 +149,7 @@ launcher_pattern = re.compile(
     r"    def _start_owut_detached\(self, ip: str\) -> None:.*?(?=\n    def _second_router_reboot_if_extroot\()",
     re.S,
 )
-text, count = launcher_pattern.subn(launcher_and_watch, text, count=1)
+text, count = launcher_pattern.subn(lambda _m: launcher_and_watch, text, count=1)
 if count != 1:
     raise SystemExit(f"v{VERSION}: nepodařilo se nahradit persistent OWUT launcher/watchdog")
 
@@ -282,7 +282,7 @@ extroot_pattern = re.compile(
     r"    def _second_router_reboot_if_extroot\(self, index: int, before_overlay: Dict\[str, Any\]\) -> Dict\[str, Any\]:.*?(?=\n    def _owut_one\()",
     re.S,
 )
-text, count = extroot_pattern.subn(extroot_block, text, count=1)
+text, count = extroot_pattern.subn(lambda _m: extroot_block, text, count=1)
 if count != 1:
     raise SystemExit(f"v{VERSION}: nepodařilo se nahradit persistent Extroot druhý reboot")
 

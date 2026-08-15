@@ -5,6 +5,14 @@ import re
 VERSION = "6.3.4"
 ROOT = Path(os.environ.get("MESH_APP_ROOT", "/app"))
 OWUT = ROOT / "owut_manager.py"
+LIVE = ROOT / "live_topology_v503.py"
+LIVE_JS = ROOT / "static" / "v503_live_topology.js"
+INDEX = ROOT / "templates" / "index.html"
+VERSIONED_MODULES = [
+    ROOT / "topology_inspector_v631.py",
+    ROOT / "lan_port_inspector_v630.py",
+    ROOT / "client_ip_resolver_v632.py",
+]
 
 if not OWUT.exists():
     raise SystemExit(f"v{VERSION}: owut_manager.py nenalezen")
@@ -147,7 +155,7 @@ pattern = re.compile(
     r"def _start_owut_background\(controller, ip: str\) -> Tuple\[bool, str\]:.*?(?=\ndef _reboot_and_wait\()",
     re.S,
 )
-text, count = pattern.subn(replacement.rstrip() + "\n\n", text, count=1)
+text, count = pattern.subn(lambda _m: replacement.rstrip() + "\n\n", text, count=1)
 if count != 1:
     raise SystemExit(f"v{VERSION}: nepodařilo se nahradit OWUT launcher/watchdog")
 
@@ -163,5 +171,35 @@ if old_call not in text:
 text = text.replace(old_call, new_call, 1)
 
 OWUT.write_text(text, encoding="utf-8")
+
+# Sjednotit viditelnou release verzi/cache tagy s image v6.3.4; funkční live logika se nemění.
+if LIVE.exists():
+    live = LIVE.read_text(encoding="utf-8")
+    live = re.sub(r'(?m)^VERSION\s*=\s*["\'][^"\']+["\']\s*$', f'VERSION = "{VERSION}"', live, count=1)
+    LIVE.write_text(live, encoding="utf-8")
+
+for module in VERSIONED_MODULES:
+    if module.exists():
+        mod = module.read_text(encoding="utf-8")
+        mod = re.sub(r'(?m)^VERSION\s*=\s*["\'][^"\']+["\']\s*$', f'VERSION = "{VERSION}"', mod, count=1)
+        module.write_text(mod, encoding="utf-8")
+
+if LIVE_JS.exists():
+    js = LIVE_JS.read_text(encoding="utf-8")
+    js = re.sub(r'LIVE v\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?', f'LIVE v{VERSION}', js)
+    LIVE_JS.write_text(js, encoding="utf-8")
+
+if INDEX.exists():
+    html = INDEX.read_text(encoding="utf-8")
+    html = re.sub(
+        r'(<link\s+[^>]*href=["\']/static/v503_live_topology\.css\?v=)[^"\']+(["\'][^>]*>)',
+        rf'\g<1>{VERSION}\2', html, flags=re.I,
+    )
+    html = re.sub(
+        r'(<script\s+[^>]*src=["\']/static/v503_live_topology\.js\?v=)[^"\']+(["\'][^>]*></script>)',
+        rf'\g<1>{VERSION}\2', html, flags=re.I,
+    )
+    INDEX.write_text(html, encoding="utf-8")
+
 print(f"v{VERSION}: OWUT launcher bez nohup + ověření PID/exit/log po startu")
 print(f"v{VERSION}: OWUT watchdog heartbeat každých 30 s + rychlá detekce falešného startu")

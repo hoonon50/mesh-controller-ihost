@@ -1,4 +1,4 @@
-OpenWRT MESH CONTROLLER PRO v6.3.4 – SONOFF iHost ARMv7
+OpenWRT MESH CONTROLLER PRO v6.3.5 – SONOFF iHost ARMv7
 
 Web: http://IP_IHOST:8088
 Docker síť: host
@@ -40,22 +40,24 @@ LIVE INTERVALY
 - aktivní MAC→IPv4 sweep nejvýše 1x za 60 s a pouze při nalezené MAC bez IPv4
 - během OWUT čekání heartbeat do operačního logu přibližně každých 30 s
 
-VERZE v6.3.4
+VERZE v6.3.5
 ------------
-- oprava falešného STARTED při automatickém/ručním OWUT upgradu
-- background launcher už nezávisí na externím příkazu nohup
-- child shell ignoruje SIGHUP přímo přes BusyBox/POSIX ash `trap '' HUP`
-- při startu se vytváří /tmp/mesh-owut.pid a /tmp/mesh-owut.log
-- po 2 sekundách se ověří, že proces skutečně běží nebo už vytvořil exit kód
-- pokud launcher selže, operace skončí během několika sekund místo čekání 20 minut
-- watchdog kontroluje PID, exit kód a poslední řádky OWUT logu
-- během dlouhého buildu zapisuje stav `OWUT běží MM:SS / 20:00` a poslední relevantní řádek logu
-- timeout nyní obsahuje poslední dostupné řádky OWUT logu pro diagnostiku
-- automatický Gmail report zůstává zachovaný i při chybě OWUT
+- oprava bezpečného návratu USB Extrootu na hlavním ROUTERu po OWUT sysupgrade
+- před sysupgrade musí být /overlay skutečně na /dev/sd* a musí být dostupné jeho živé UUID
+- UUID se nikdy nehardcoduje; bere se z aktuálně připojeného USB overlaye těsně před aktualizací
+- po prvním sysupgrade bootu Controller zjistí, zda ROUTER běží z interního rootfs_data/UBIFS nebo už z USB
+- pokud je první boot interní, Controller zapíše do právě aktivního interního /etc/config/fstab sekci fstab.extroot s uloženým UUID, target=/overlay, fstype=ext4 a enabled=1
+- zapsaná interní Extroot konfigurace se přes SSH okamžitě ověří ještě PŘED druhým rebootem
+- pokud USB s očekávaným UUID není vidět nebo kontrola fstab selže, druhý reboot se bezpečně neprovede a ROUTER zůstane dostupný na interním overlayi
+- teprve po ověření interního fstab se provede druhý reboot požadovaný OpenWrt pro Extroot po sysupgrade
+- po druhém bootu musí být /overlay na USB a UUID musí přesně odpovídat hodnotě před aktualizací
+- při selhání se do reportu přidá diagnostika overlay / fstab / block info / extroot boot log
+- pokud je USB Extroot aktivní už po prvním bootu a UUID sedí, zbytečný druhý reboot se neprovádí
+- v6.3.4 OWUT launcher s PID/log/heartbeat zůstává beze změny
 - v6.3.3 live LAN porty, blokování, ochrana iHOST/HASSIO a klientské inspektory se nemění
-- žádné nové zápisy do OpenWrt UCI a žádné nové pravidelné zápisy na SD
-- GitHub Actions publikuje :latest a :6.3.4
-- docker-compose lokální image tag je 6.3.4
+- žádné periodické UCI zápisy; jediný servisní UCI zápis je obnova interního fstab během ROUTER sysupgrade mezi prvním a druhým bootem
+- GitHub Actions publikuje :latest a :6.3.5
+- docker-compose lokální image tag je 6.3.5
 
 DŮLEŽITÉ PŘI AKTUALIZACI
 ------------------------

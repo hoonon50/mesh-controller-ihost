@@ -44,4 +44,4 @@ jobs:
           push: true
           tags: |
             ${{ steps.image.outputs.name }}:latest
-            ${{ steps.image.outputs.name }}:6.3.3
+            ${{ steps.image.outputs.name }}:6.3.4

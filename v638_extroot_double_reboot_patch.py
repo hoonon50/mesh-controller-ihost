@@ -11,7 +11,6 @@ if not OPS.exists():
 
 text = OPS.read_text(encoding="utf-8")
 
-# Runtime verze Operation Manageru.
 text = re.sub(
     r'(?m)^VERSION\s*=\s*["\'][^"\']+["\']\s*$',
     f'VERSION = "{VERSION}"',
@@ -23,16 +22,11 @@ text = text.replace('START v6.3.7:', f'START v{VERSION}:')
 text = text.replace('Persistent Operation Manager v6.3.7', f'Persistent Operation Manager v{VERSION}')
 text = text.replace('OpenWRT MESH CONTROLLER PRO v6.3.7', f'OpenWRT MESH CONTROLLER PRO v{VERSION}')
 
-# v6.3.6 před druhým rebootem prováděla příliš přísný first-boot gate
-# (apk seznam balíčků, ext4, owut atd.) a při jeho selhání druhý reboot zrušila.
-# Aktuální OpenWrt ASU dokumentace pro Extroot říká: po sysupgrade jsou potřeba
-# dva rebooty; po prvním bootu se externí root nepřipojí a není nutné Extroot
-# znovu vytvářet. Proto v6.3.8 nejprve provede standardní druhý reboot bez
-# zápisu do fstab. Teprve pokud je po druhém bootu stále interní overlay,
-# použije bezpečný fallback: ověřit původní USB UUID, zapsat pouze interní
-# fstab.extroot a provést třetí reboot. USB se nikdy neformátuje ani nekopíruje.
-
-extroot_block = r'''    def _repair_extroot_fstab_fallback(self, expected_uuid: str) -> str:
+# v6.3.6 mohla po prvním interním bootu zrušit potřebný druhý reboot kvůli
+# příliš přísnému package/ext4 gate. v6.3.8 následuje standardní Extroot flow:
+# druhý reboot bez změny fstab; teprve pokud zůstane interní overlay, provede
+# fallback opravu pouze interního fstab.extroot podle přesného pre-upgrade UUID.
+extroot_block = r"""    def _repair_extroot_fstab_fallback(self, expected_uuid: str) -> str:
         expected_uuid = str(expected_uuid or "").strip()
         if not re.fullmatch(r"[0-9A-Fa-f-]{16,64}", expected_uuid):
             raise RuntimeError(f"ROUTER .1: neplatné referenční UUID Extrootu ({expected_uuid or 'N/A'}).")
@@ -152,8 +146,6 @@ printf 'OK=1\nINTERNAL_OVERLAY=%s\nUSB_DEV=%s\nUUID=%s\nTYPE=%s\n' \
             self._log(f"ROUTER .1: druhý boot OK – USB Extroot {second_source}, UUID {second_uuid}.")
             return second
 
-        # Oficiální druhý reboot Extroot neaktivoval. Teď teprve opravíme interní
-        # fstab podle přesného před-upgrade UUID. USB data se nijak nemění.
         self._set(stage="router_extroot_fallback_repair", current_index=index, current_ip=MAIN_IP,
                   current_name="ROUTER", action_sent=False, status="running", progress=96)
         self._log(
@@ -185,7 +177,7 @@ printf 'OK=1\nINTERNAL_OVERLAY=%s\nUSB_DEV=%s\nUUID=%s\nTYPE=%s\n' \
         self._log(f"ROUTER .1: fallback úspěšný – USB Extroot {third_source}, UUID {third_uuid}.")
         return third
 
-'''
+"""
 
 pattern = re.compile(
     r"    def _second_router_reboot_if_extroot\(self, index: int, before_overlay: Dict\[str, Any\]\) -> Dict\[str, Any\]:.*?(?=\n    def _owut_one\()",

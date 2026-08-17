@@ -1,4 +1,4 @@
-OpenWRT MESH CONTROLLER PRO v6.3.7 – SONOFF iHost ARMv7
+OpenWRT MESH CONTROLLER PRO v6.3.8 – SONOFF iHost ARMv7
 
 Web: http://IP_IHOST:8088
 Docker síť: host
@@ -40,20 +40,22 @@ LIVE INTERVALY
 - aktivní MAC→IPv4 sweep nejvýše 1x za 60 s a pouze při nalezené MAC bez IPv4
 - během OWUT čekání heartbeat do operačního logu přibližně každých 30 s
 
-VERZE v6.3.7
+VERZE v6.3.8
 ------------
-- běžný rolling reboot má vlastní pořadí: MESH2 -> MESH3 -> MESH4 -> ROUTER -> MESH1
-- MESH1 se při běžném rebootu restartuje úplně poslední, aby iHost po návratu LAN linku vstoupil do už běžící sítě s ROUTER/DHCP/DNS/gateway
-- OWUT/sysupgrade pořadí se nemění: MESH2 -> MESH3 -> MESH4 -> MESH1 -> ROUTER
-- změna reboot pořadí platí pro Persistent Operation Manager i /api/owut/reboot target=all
-- scheduler automatických OWUT aktualizací se v této verzi nemění
-- bezpečnostní USB Extroot logika v6.3.5/v6.3.6 zůstává beze změny
-- v Gmail reportech se označení iHost CPU / SoC mění na iHost teplota
-- samotný společný iHost temperature reader z v6.3.6 se nemění
-- pokud OWUT nemá dostupný sysupgrade, zůstává no-update větev bez flashování, rebootu a zápisu do Extrootu
-- žádné nové periodické zápisy do OpenWrt UCI ani na SD
-- GitHub Actions publikuje :latest a :6.3.7
-- docker-compose lokální image tag je 6.3.7
+- opravuje automatický návrat USB Extrootu po skutečném OWUT/sysupgrade hlavního ROUTERu
+- ruší příliš přísný first-boot package gate z v6.3.6, který mohl zablokovat potřebný druhý reboot
+- po prvním interním bootu se po stabilním SSH čeká 15 s a provede se standardní druhý reboot bez změny fstab
+- po druhém bootu se ověří, že /overlay běží z USB a UUID přesně odpovídá živému UUID uloženému před sysupgrade
+- pokud je i po druhém bootu stále interní overlay, automatický fallback ověří původní USB disk podle přesného UUID a TYPE=ext4
+- fallback zapisuje pouze interní fstab.extroot: target /overlay, původní UUID, fstype ext4, enabled=1
+- po fallback opravě se provede třetí reboot a znovu se ověří USB /overlay a přesné UUID
+- USB disk se nikdy neformátuje, nemaže, nereparticionuje ani se na něj nekopíruje nový overlay
+- pokud není sysupgrade dostupný, no-update větev stále neprovádí žádný reboot ani zápis do Extrootu
+- OWUT/sysupgrade pořadí zůstává MESH2 -> MESH3 -> MESH4 -> MESH1 -> ROUTER
+- běžný reboot z v6.3.7 zůstává MESH2 -> MESH3 -> MESH4 -> ROUTER -> MESH1
+- Gmail reporty nadále používají označení iHost teplota
+- GitHub Actions publikuje :latest a :6.3.8
+- docker-compose lokální image tag je 6.3.8
 
 DŮLEŽITÉ PŘI AKTUALIZACI
 ------------------------

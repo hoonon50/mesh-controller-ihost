@@ -1,4 +1,4 @@
-OpenWRT MESH CONTROLLER PRO v6.3.8 – SONOFF iHost ARMv7
+OpenWRT MESH CONTROLLER PRO v6.3.9 – SONOFF iHost ARMv7
 
 Web: http://IP_IHOST:8088
 Docker síť: host
@@ -40,28 +40,32 @@ LIVE INTERVALY
 - aktivní MAC→IPv4 sweep nejvýše 1x za 60 s a pouze při nalezené MAC bez IPv4
 - během OWUT čekání heartbeat do operačního logu přibližně každých 30 s
 
-VERZE v6.3.8
+VERZE v6.3.9
 ------------
-- opravuje automatický návrat USB Extrootu po skutečném OWUT/sysupgrade hlavního ROUTERu
-- ruší příliš přísný first-boot package gate z v6.3.6, který mohl zablokovat potřebný druhý reboot
-- po prvním interním bootu se po stabilním SSH čeká 15 s a provede se standardní druhý reboot bez změny fstab
-- po druhém bootu se ověří, že /overlay běží z USB a UUID přesně odpovídá živému UUID uloženému před sysupgrade
-- pokud je i po druhém bootu stále interní overlay, automatický fallback ověří původní USB disk podle přesného UUID a TYPE=ext4
-- fallback zapisuje pouze interní fstab.extroot: target /overlay, původní UUID, fstype ext4, enabled=1
-- po fallback opravě se provede třetí reboot a znovu se ověří USB /overlay a přesné UUID
-- USB disk se nikdy neformátuje, nemaže, nereparticionuje ani se na něj nekopíruje nový overlay
-- pokud není sysupgrade dostupný, no-update větev stále neprovádí žádný reboot ani zápis do Extrootu
+- opravuje duplicitní automatický OWUT scheduler, který mohl spustit starou upgrade cestu z owut_manager.py
+- jediným vlastníkem automatického OWUT plánování je nyní PersistentMeshOperationManager
+- legacy _scheduler_loop v owut_manager.py je hard-disabled a jeho owut-scheduler thread se vůbec nespouští
+- nastavení plánování /data/owut_settings.json zůstává zachované; persistent scheduler používá stejná uživatelská nastavení
+- starý POST /api/owut/upgrade zůstává kvůli kompatibilitě, ale už nespouští legacy _upgrade_worker; deleguje na persistent manager
+- tím je odstraněna stará automatická cesta, která po prvním interním bootu ROUTERu používala first-boot package gate a mohla zrušit nutný Extroot reboot
+- bezpečný Extroot flow z v6.3.8 zůstává aktivní: standardní druhý reboot bez změny fstab, přesná kontrola původního UUID a fallback pouze do interního fstab.extroot
+- USB disk se při recovery nikdy neformátuje, nemaže, nereparticionuje ani se na něj nekopíruje nový overlay
+- pokud není sysupgrade dostupný, no-update větev neprovádí reboot ani zápis do Extrootu
 - OWUT/sysupgrade pořadí zůstává MESH2 -> MESH3 -> MESH4 -> MESH1 -> ROUTER
-- běžný reboot z v6.3.7 zůstává MESH2 -> MESH3 -> MESH4 -> ROUTER -> MESH1
-- Gmail reporty nadále používají označení iHost teplota
-- GitHub Actions publikuje :latest a :6.3.8
-- docker-compose lokální image tag je 6.3.8
+- běžný reboot zůstává MESH2 -> MESH3 -> MESH4 -> ROUTER -> MESH1
+- Operation Manager UI zobrazuje verzi v6.3.9
+- GitHub Actions publikuje :latest a :6.3.9
+- docker-compose lokální image tag je 6.3.9
 
 DŮLEŽITÉ PŘI AKTUALIZACI
 ------------------------
 Persistentní /data volume ponechte beze změny. Existující /data/config.json,
-/data/backups, /data/wan_usage.json, /data/mesh_operation.json a
+/data/backups, /data/wan_usage.json, /data/mesh_operation.json,
+/data/mesh_scheduler_v500.json, /data/owut_settings.json a
 /data/lan_port_state.json se zachovávají.
+
+Po aktualizaci Controlleru se kontejner musí restartovat, aby starý již běžící
+owut-scheduler thread zmizel. Nový image v6.3.9 už tento thread nevytváří.
 
 SSH BEZPEČNOST
 --------------

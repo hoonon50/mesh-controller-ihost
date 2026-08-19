@@ -65,10 +65,8 @@ if route_count != 1:
 # Build-time pojistky: starý scheduler ani starý upgrade worker nesmí být z API dosažitelný.
 if 'threading.Thread(target=_scheduler_loop' in owut or 'name="owut-scheduler"' in owut:
     raise SystemExit(f"v{VERSION}: legacy scheduler thread je po patchi stále aktivní")
-
-route_check = legacy_upgrade_route.search(owut)
-if route_check:
-    raise SystemExit(f"v{VERSION}: legacy upgrade route nebyla nahrazena")
+if 'threading.Thread(target=_upgrade_worker, args=(controller, False)' in owut:
+    raise SystemExit(f"v{VERSION}: legacy /api/owut/upgrade stále spouští _upgrade_worker")
 if 'source="legacy-api"' not in owut or 'app.extensions.get("mesh_operation_v500")' not in owut:
     raise SystemExit(f"v{VERSION}: legacy upgrade route nedeleguje na persistent manager")
 

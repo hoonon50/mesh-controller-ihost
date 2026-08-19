@@ -1,2 +1,0 @@
-v6.3.9 Docker build validation: SUCCESS
-commit=2fad0b675093688751fef793cae8a3232f98fc50

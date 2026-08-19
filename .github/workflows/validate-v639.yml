@@ -3,10 +3,12 @@ name: Validate v6.3.9 branch
 on:
   push:
     branches: ["release/v6.3.9"]
+    paths-ignore:
+      - "VALIDATION_v639_OK.txt"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -16,3 +18,12 @@ jobs:
         uses: actions/checkout@v4
       - name: Build Docker image without publishing
         run: docker build --tag mesh-controller-v639-validation .
+      - name: Mark successful validation
+        shell: bash
+        run: |
+          printf 'v6.3.9 Docker build validation: SUCCESS\ncommit=%s\n' "$GITHUB_SHA" > VALIDATION_v639_OK.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VALIDATION_v639_OK.txt
+          git commit -m "ci: mark v6.3.9 validation success" || exit 0
+          git push

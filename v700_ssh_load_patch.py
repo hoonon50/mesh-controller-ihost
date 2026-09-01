@@ -198,7 +198,9 @@ app = sub_once(
 APP.write_text(app, encoding="utf-8")
 
 app_js = APP_JS.read_text(encoding="utf-8")
-app_js = sub_once(app_js, r'setInterval\(loadStatus,\s*30000\)', 'setInterval(loadStatus,60000)', "legacy UI status poll")
+# Starší build patch může hodnotu 30000 před v7.0.0 změnit. Záměrně tedy
+# hledáme konkrétní timer loadStatus s libovolným číselným intervalem.
+app_js = sub_once(app_js, r'setInterval\(loadStatus,\s*\d+\)', 'setInterval(loadStatus,60000)', "legacy UI status poll")
 APP_JS.write_text(app_js, encoding="utf-8")
 
 
@@ -236,12 +238,23 @@ if V500_JS.exists():
 
 html = INDEX.read_text(encoding="utf-8")
 html = sub_once(html, r'<title>.*?</title>', f'<title>OpenWRT MESH CONTROLLER PRO · v.{VERSION}</title>', "browser title", flags=re.S)
-html = sub_once(
-    html,
-    r'<h1>\s*OpenWRT MESH CONTROLLER PRO\s*</h1>',
-    f'<h1><span>OpenWRT MESH CONTROLLER PRO</span><span class="app-version">v.{VERSION}</span></h1>',
-    "header title/version",
-)
+# Šablona na release větvi už může mít verzi vloženou přímo. Patch je proto
+# idempotentní a zároveň zachovává samostatný přesný textový uzel názvu, který
+# používá live-topology frontend k nalezení headeru.
+if 'class="app-version"' in html:
+    html = sub_once(
+        html,
+        r'<span class="app-version">v\.[^<]+</span>',
+        f'<span class="app-version">v.{VERSION}</span>',
+        "header existing version",
+    )
+else:
+    html = sub_once(
+        html,
+        r'<h1>\s*OpenWRT MESH CONTROLLER PRO\s*</h1>',
+        f'<h1><span>OpenWRT MESH CONTROLLER PRO</span><span class="app-version">v.{VERSION}</span></h1>',
+        "header title/version",
+    )
 html = re.sub(r'(/static/app\.js\?v=)[^"\']+', rf'\g<1>{VERSION}', html)
 html = re.sub(r'(/static/style\.css\?v=)[^"\']+', rf'\g<1>{VERSION}', html)
 html = re.sub(r'(/static/v503_live_topology\.(?:css|js)\?v=)[^"\']+', rf'\g<1>{VERSION}', html)
@@ -261,6 +274,7 @@ checks = {
     "LAN state-aware": 'def _live_port_up' in LAN.read_text(encoding="utf-8"),
     "LAN no blind 5s": 'Port je již administrativně/fyzicky dole: nulové SSH.' in LAN.read_text(encoding="utf-8"),
     "legacy refresh 60s": 'time.sleep(max(60, seconds))' in APP.read_text(encoding="utf-8"),
+    "legacy UI 60s": 'setInterval(loadStatus,60000)' in APP_JS.read_text(encoding="utf-8"),
     "UI version": f'v.{VERSION}' in INDEX.read_text(encoding="utf-8"),
 }
 failed = [name for name, ok in checks.items() if not ok]

@@ -8,8 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     WAN_USAGE_TIMEZONE=Europe/Prague \
     WAN_USAGE_POLL_SECONDS=30 \
     WAN_USAGE_SAVE_SECONDS=3600 \
-    MESH_LIVE_TOPOLOGY_POLL=5 \
-    MESH_LIVE_HEALTH_POLL=15 \
+    MESH_LIVE_TOPOLOGY_POLL=15 \
+    MESH_LIVE_HEALTH_POLL=30 \
     MESH_NODE_FAILURE_GRACE=2 \
     MESH_LAN_CLIENT_TTL=45 \
     MESH_WIFI_POLICY_START_DELAY=20 \
@@ -17,8 +17,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MESH_WIFI_POLICY_MAX_RETRIES=20 \
     MESH_WIFI_MAX_INACTIVITY=60 \
     MESH_WIFI_SKIP_INACTIVITY_POLL=0 \
-    MESH_LAN_PORT_WATCH_SECONDS=5 \
-    MESH_LAN_PROTECT_SCAN_SECONDS=30 \
+    MESH_LAN_PORT_WATCH_SECONDS=15 \
+    MESH_LAN_PROTECT_SCAN_SECONDS=60 \
+    MESH_LAN_REASSERT_SECONDS=300 \
+    MESH_LAN_ACTION_RETRY_SECONDS=60 \
     MESH_IP_RESOLVE_ACTIVE=1 \
     MESH_IP_RESOLVE_SWEEP_SECONDS=60 \
     MESH_IP_RESOLVE_CACHE_SECONDS=300 \
@@ -57,7 +59,8 @@ RUN mkdir -p /data/backups \
     && python3 /app/v637_reboot_order_report_patch.py \
     && python3 /app/v638_extroot_double_reboot_patch.py \
     && python3 /app/v639_single_owut_owner_patch.py \
-    && python3 -m py_compile /app/app.py /app/mesh_operation_manager.py /app/live_topology_v503.py /app/wifi_ap_policy_v600.py /app/lan_port_control_v620.py /app/lan_port_inspector_v630.py /app/topology_inspector_v631.py /app/client_ip_resolver_v632.py /app/ihost_temperature_v636.py /app/v500_patch.py /app/v503_live_topology_patch.py /app/v600_wifi_ap_policy_patch.py /app/v620_lan_port_control_patch.py /app/v630_lan_port_inspector_patch.py /app/v631_topology_inspector_patch.py /app/v632_client_ip_resolver_patch.py /app/v633_live_lan_ports_patch.py /app/v634_owut_launcher_patch.py /app/v635_extroot_recovery_patch.py /app/v636_safe_preflight_ihost_temp_patch.py /app/v636_persistent_owut_patch.py /app/v637_reboot_order_report_patch.py /app/v638_extroot_double_reboot_patch.py /app/v639_single_owut_owner_patch.py \
+    && python3 /app/v700_ssh_load_patch.py \
+    && python3 -m py_compile /app/app.py /app/mesh_operation_manager.py /app/live_topology_v503.py /app/wifi_ap_policy_v600.py /app/lan_port_control_v620.py /app/lan_port_inspector_v630.py /app/topology_inspector_v631.py /app/client_ip_resolver_v632.py /app/ihost_temperature_v636.py /app/v500_patch.py /app/v503_live_topology_patch.py /app/v600_wifi_ap_policy_patch.py /app/v620_lan_port_control_patch.py /app/v630_lan_port_inspector_patch.py /app/v631_topology_inspector_patch.py /app/v632_client_ip_resolver_patch.py /app/v633_live_lan_ports_patch.py /app/v634_owut_launcher_patch.py /app/v635_extroot_recovery_patch.py /app/v636_safe_preflight_ihost_temp_patch.py /app/v636_persistent_owut_patch.py /app/v637_reboot_order_report_patch.py /app/v638_extroot_double_reboot_patch.py /app/v639_single_owut_owner_patch.py /app/v700_ssh_load_patch.py \
     && if [ -f /app/owut_manager.py ]; then python3 -m py_compile /app/owut_manager.py; fi \
     && python3 -c "from jinja2 import Environment, FileSystemLoader; Environment(loader=FileSystemLoader('/app/templates')).get_template('index.html')"
 EXPOSE 8088

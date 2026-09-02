@@ -15,7 +15,7 @@ match = pattern.search(ops)
 if not match:
     raise SystemExit(f"v{VERSION}: _build_report nenalezen")
 
-method = '''    def _build_report(self, ok: bool) -> Tuple[str, str, str]:
+method = """    def _build_report(self, ok: bool) -> Tuple[str, str, str]:
         state = self.snapshot()
         title = "KOMPLETNÍ REBOOT MESH" if state.get("kind") == "reboot_all" else "OWUT SYSUPGRADE"
         result = "VŠE V POŘÁDKU" if ok else "CHYBA / NEDOKONČENO"
@@ -102,7 +102,7 @@ method = '''    def _build_report(self, ok: bool) -> Tuple[str, str, str]:
 <tr><td style="background:#071a2d;padding:12px 20px;color:#cbd5e1;font-size:10px">Persistent Operation Manager v{VERSION}</td></tr>
 </table></td></tr></table></body></html>'''
         return subject, text_body, html_body
-'''
+"""
 
 ops = ops[:match.start()] + method + ops[match.end():]
 OPS.write_text(ops, encoding="utf-8")

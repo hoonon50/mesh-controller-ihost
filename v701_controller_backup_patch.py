@@ -124,8 +124,8 @@ if report_marker not in ops:
     )
     ops = sub_once(
         ops,
-        r'\+ f"\\n\\niHost CPU / SoC: \{ihost_text\}\\n\\n\{state\.get\(\'message\',\'\'\)\}"',
-        '+ f"\\n\\niHost CPU / SoC: {ihost_text}" + controller_backup_text + f"\\n\\n{state.get(\'message\',\'\')}"',
+        r'\+ f"\\n\\niHost teplota: \{ihost_text\}\\n\\n\{state\.get\(\'message\',\'\'\)\}"',
+        '+ f"\\n\\niHost teplota: {ihost_text}" + controller_backup_text + f"\\n\\n{state.get(\'message\',\'\')}"',
         "text report backup insertion",
     )
     ops = sub_once(

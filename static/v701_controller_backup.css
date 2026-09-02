@@ -1,0 +1,15 @@
+.controller-backup-card{margin-top:18px}
+.controller-backup-grid{display:grid;grid-template-columns:minmax(260px,.8fr) minmax(360px,1.2fr);gap:18px}
+.controller-backup-panel{border:1px solid var(--line,#d7dee7);border-radius:12px;padding:14px;background:rgba(255,255,255,.02)}
+.controller-backup-panel h3{margin:0 0 10px;font-size:14px;letter-spacing:.02em}
+.controller-backup-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+.controller-backup-form{display:grid;grid-template-columns:150px minmax(0,1fr);gap:9px 12px;align-items:center}
+.controller-backup-form label{font-size:12px;color:var(--muted,#64748b);font-weight:700}
+.controller-backup-form input{width:100%;box-sizing:border-box}
+.controller-backup-note{font-size:12px;color:var(--muted,#64748b);line-height:1.45;margin-top:10px}
+.controller-backup-status{margin-top:14px;border-radius:9px;padding:10px 12px;background:rgba(100,116,139,.10);font-size:12px;line-height:1.45}
+.controller-backup-status.cb-ok{background:rgba(22,163,74,.12);color:#15803d}
+.controller-backup-status.cb-error{background:rgba(220,38,38,.10);color:#b91c1c}
+.controller-backup-next{margin-top:8px;font-size:12px;color:var(--muted,#64748b)}
+#cbImportFile{display:none}
+@media (max-width:860px){.controller-backup-grid{grid-template-columns:1fr}.controller-backup-form{grid-template-columns:1fr;gap:5px}.controller-backup-form label{margin-top:5px}}

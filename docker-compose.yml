@@ -1,7 +1,7 @@
 services:
   mesh-controller:
     build: .
-    image: mesh-controller-ihost:7.0.0
+    image: mesh-controller-ihost:7.0.1
     network_mode: host
     restart: unless-stopped
     volumes:

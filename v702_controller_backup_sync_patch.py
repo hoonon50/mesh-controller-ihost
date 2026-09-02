@@ -11,7 +11,9 @@ JS = ROOT / "static" / "v701_controller_backup.js"
 
 
 def sub_once(text: str, pattern: str, repl: str, label: str, flags: int = 0) -> str:
-    new, count = re.subn(pattern, repl, text, count=1, flags=flags)
+    # Replacement vkládáme přes callback, aby backslashe uvnitř generovaného
+    # Python kódu (např. regex \d) nebyly znovu interpretovány re.sub().
+    new, count = re.subn(pattern, lambda _m: repl, text, count=1, flags=flags)
     if count != 1:
         raise SystemExit(f"v{VERSION}: nenalezen patch bod: {label}")
     return new
@@ -313,5 +315,5 @@ if failed:
 
 print(f"v{VERSION}: automatic Controller/Nextcloud backup now uses the exact OWUT scheduler trigger")
 print(f"v{VERSION}: separate T-10 backup scheduler disabled")
-print(f"v{VERSION}: Nextcloud retention keeps the newest {10} automatic Controller backups")
+print(f"v{VERSION}: Nextcloud retention keeps the newest 10 automatic Controller backups")
 print(f"v{VERSION}: no other Controller logic changed")

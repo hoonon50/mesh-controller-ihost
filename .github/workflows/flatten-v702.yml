@@ -1,0 +1,164 @@
+name: Flatten and validate v7.0.2
+
+on:
+  push:
+    branches: ["clean/v7.0.2-flat"]
+
+permissions:
+  contents: write
+
+jobs:
+  flatten-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Apply all production patches once
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /app
+          sudo ln -s "$GITHUB_WORKSPACE" /app
+          python3 v369_patch.py
+          python3 owut_patch.py
+          python3 refresh_patch.py
+          python3 v388_reorder_patch.py
+          python3 v389_wan_usage_patch.py
+          python3 v3812_wan_history_patch.py
+          python3 v500_patch.py
+          python3 v503_live_topology_patch.py
+          python3 v600_wifi_ap_policy_patch.py
+          python3 v620_lan_port_control_patch.py
+          python3 v630_lan_port_inspector_patch.py
+          python3 v631_topology_inspector_patch.py
+          python3 v632_client_ip_resolver_patch.py
+          python3 v633_live_lan_ports_patch.py
+          python3 v634_owut_launcher_patch.py
+          python3 v635_extroot_recovery_patch.py
+          python3 v636_safe_preflight_ihost_temp_patch.py
+          python3 v636_persistent_owut_patch.py
+          python3 v637_reboot_order_report_patch.py
+          python3 v638_extroot_double_reboot_patch.py
+          python3 v639_single_owut_owner_patch.py
+          python3 v700_ssh_load_patch.py
+          python3 v701_controller_backup_patch.py
+          python3 v701_report_fix_patch.py
+          python3 v702_controller_backup_sync_patch.py
+
+      - name: Remove historical build-time files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f ./*patch.py requirements.txt PROJECT_MANIFEST.md README_v7.0.2.txt
+          rm -rf docs
+          rm -f .github/workflows/flatten-v702.yml
+          cat > README.md <<'EOF'
+          # OpenWRT MESH CONTROLLER PRO v7.0.2
+
+          Finální flattened produkční zdroj pro SONOFF iHost (`linux/arm/v7`).
+
+          Historické `*_patch.py` soubory už nejsou potřeba: všechny změny až po v7.0.2 jsou napevno aplikované v aktuálních zdrojových souborech.
+
+          - Web: `http://IP_IHOST:8088`
+          - Docker network: `host`
+          - Persistentní volume: `mesh-controller-data:/data`
+          - Image: `ghcr.io/hoonon50/mesh-controller-ihost:7.0.2`
+          - GitHub Actions z `main` publikuje `:latest` a `:7.0.2`
+
+          Persistentní `/data` nemažte. Obsahuje konfiguraci, WAN statistiky, OWUT nastavení, LAN stavy a Controller/Nextcloud nastavení.
+          EOF
+          cat > Dockerfile <<'EOF'
+          FROM debian:bookworm-slim
+
+          ENV PYTHONDONTWRITEBYTECODE=1 \
+              PYTHONUNBUFFERED=1 \
+              DATA_DIR=/data \
+              PORT=8088 \
+              TZ=Europe/Prague \
+              WAN_USAGE_TIMEZONE=Europe/Prague \
+              WAN_USAGE_POLL_SECONDS=30 \
+              WAN_USAGE_SAVE_SECONDS=3600 \
+              MESH_LIVE_TOPOLOGY_POLL=15 \
+              MESH_LIVE_HEALTH_POLL=30 \
+              MESH_NODE_FAILURE_GRACE=2 \
+              MESH_LAN_CLIENT_TTL=45 \
+              MESH_WIFI_POLICY_START_DELAY=20 \
+              MESH_WIFI_POLICY_RETRY_SECONDS=30 \
+              MESH_WIFI_POLICY_MAX_RETRIES=20 \
+              MESH_WIFI_MAX_INACTIVITY=60 \
+              MESH_WIFI_SKIP_INACTIVITY_POLL=0 \
+              MESH_LAN_PORT_WATCH_SECONDS=15 \
+              MESH_LAN_PROTECT_SCAN_SECONDS=60 \
+              MESH_LAN_REASSERT_SECONDS=300 \
+              MESH_LAN_ACTION_RETRY_SECONDS=60 \
+              MESH_IP_RESOLVE_ACTIVE=1 \
+              MESH_IP_RESOLVE_SWEEP_SECONDS=60 \
+              MESH_IP_RESOLVE_CACHE_SECONDS=300 \
+              MESH_IP_RESOLVE_SWEEP_BATCH=48
+
+          WORKDIR /app
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends python3 python3-flask python3-paramiko gunicorn tzdata ca-certificates \
+              && rm -rf /var/lib/apt/lists/*
+          COPY . .
+          RUN mkdir -p /data/backups \
+              && python3 -m py_compile /app/app.py /app/mesh_core.py /app/mesh_operation_manager.py /app/owut_manager.py /app/wan_usage.py /app/controller_backup_v701.py /app/live_topology_v503.py /app/wifi_ap_policy_v600.py /app/lan_port_control_v620.py /app/lan_port_inspector_v630.py /app/topology_inspector_v631.py /app/client_ip_resolver_v632.py /app/ihost_temperature_v636.py /app/v369_extra.py \
+              && python3 -c "from jinja2 import Environment, FileSystemLoader; Environment(loader=FileSystemLoader('/app/templates')).get_template('index.html')"
+          EXPOSE 8088
+          CMD ["gunicorn", "--bind", "0.0.0.0:8088", "--workers", "1", "--threads", "10", "--timeout", "2600", "app:app"]
+          EOF
+
+      - name: Check flattened tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(find . -maxdepth 1 -name '*patch.py' -print -quit)"
+          python3 -m py_compile *.py
+          grep -q 'v.7.0.2' templates/index.html
+          grep -q 'VE STEJNÝ ČAS JAKO OWUT' templates/index.html
+          ! grep -q '10 MINUT PŘED OWUT' templates/index.html
+          grep -q 'mesh-controller-ihost:7.0.2' docker-compose.yml
+          grep -q ':7.0.2' .github/workflows/build-ihost.yml
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build ARMv7 flattened image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/arm/v7
+          load: true
+          push: false
+          tags: mesh-controller-test:v702-flat
+
+      - name: Smoke test flattened container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name mesh-v702-flat-test -p 18088:8088 mesh-controller-test:v702-flat
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18088/ >/tmp/index.html; then break; fi
+            sleep 2
+          done
+          grep -q 'ZÁLOHA CONTROLLERU' /tmp/index.html
+          grep -q 'VE STEJNÝ ČAS JAKO OWUT' /tmp/index.html
+          curl -fsS http://127.0.0.1:18088/api/v701/controller-backup >/tmp/backup.json
+          grep -q '"version":"7.0.2"' /tmp/backup.json
+          docker exec mesh-v702-flat-test python3 -c 'from controller_backup_v701 import VERSION,REMOTE_KEEP; assert VERSION=="7.0.2" and REMOTE_KEEP==10'
+          docker logs mesh-v702-flat-test --tail 120
+
+      - name: Commit flattened source back to branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Flatten v7.0.2 production source'
+          git push origin HEAD:clean/v7.0.2-flat

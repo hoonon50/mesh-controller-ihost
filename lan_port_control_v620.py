@@ -13,11 +13,13 @@ from flask import jsonify, request
 
 from mesh_core import controller
 
-VERSION = "6.2.0"
+VERSION = "7.0.2"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 STATE_FILE = DATA_DIR / "lan_port_state.json"
-WATCH_SECONDS = max(5, int(os.environ.get("MESH_LAN_PORT_WATCH_SECONDS", "5")))
-PROTECT_SCAN_SECONDS = max(15, int(os.environ.get("MESH_LAN_PROTECT_SCAN_SECONDS", "30")))
+WATCH_SECONDS = max(15, int(os.environ.get("MESH_LAN_PORT_WATCH_SECONDS", "15")))
+PROTECT_SCAN_SECONDS = max(30, int(os.environ.get("MESH_LAN_PROTECT_SCAN_SECONDS", "60")))
+REASSERT_SECONDS = max(60, int(os.environ.get("MESH_LAN_REASSERT_SECONDS", "300")))
+ACTION_RETRY_SECONDS = max(30, int(os.environ.get("MESH_LAN_ACTION_RETRY_SECONDS", "60")))
 PORT_RE = re.compile(r"^lan([1-4])$", re.I)
 
 PROTECTED_HOSTS: Dict[str, Dict[str, str]] = {
@@ -45,6 +47,8 @@ class LanPortController:
         self.state = self._load_state()
         self.last_errors: Dict[str, str] = {}
         self.last_scan = 0.0
+        self.app = None
+        self._last_reassert: Dict[str, float] = {}
 
     def _load_state(self) -> Dict[str, Any]:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -268,25 +272,87 @@ done
                 self._scan_router_protection(ip)
         self.last_scan = time.monotonic()
 
+    def _live_port_up(self, ip: str, port: str) -> Optional[bool]:
+        """Vrátí čerstvý stav portu z Live Topology bez dalšího SSH.
+
+        True  = port je fyzicky UP a uloženou blokaci je potřeba aplikovat.
+        False = port už je DOWN, žádné SSH není potřeba.
+        None  = čerstvý live vzorek není dostupný; použije se pomalý fallback.
+        """
+        app = getattr(self, "app", None)
+        if app is None or not hasattr(app, "extensions"):
+            return None
+        try:
+            collector = app.extensions.get("live_topology_v503")
+            if collector is None:
+                return None
+            snap = collector.snapshot()
+        except Exception:
+            return None
+        for node in snap.get("nodes", []) or []:
+            if not isinstance(node, dict) or str(node.get("ip") or "") != ip:
+                continue
+            if not node.get("online") or node.get("stale"):
+                return None
+            for row in node.get("ports", []) or []:
+                if isinstance(row, dict) and str(row.get("name") or "").lower() == port:
+                    return bool(row.get("up"))
+            return None
+        return None
+
     def enforce(self) -> None:
+        """Obnovuje uložené blokace bez periodického SSH bombardování.
+
+        V běžném stavu je port podle Live Topology už DOWN a neotevře se žádné
+        SSH. Po rebootu routeru Live Topology uvidí port jako UP a následuje
+        právě jeden opravný `ip link set ... down`. Pokud live collector není
+        dostupný, použije se pouze pomalý REASSERT_SECONDS fallback.
+        """
         with self.lock:
             blocked = {
                 ip: list(ports)
                 for ip, ports in self.state.get("blocked", {}).items()
                 if isinstance(ports, list)
             }
+
+        now = time.monotonic()
+        active_keys: set[str] = set()
         for ip, ports in blocked.items():
             for port in ports:
+                key = f"{ip}/{port}"
+                active_keys.add(key)
                 with self.lock:
                     if self._is_protected_locked(ip, port):
                         continue
+                    last_attempt = float(self._last_reassert.get(key, 0.0) or 0.0)
+
+                live_up = self._live_port_up(ip, port)
+                if live_up is False:
+                    # Port je již administrativně/fyzicky dole: nulové SSH.
+                    continue
+                if live_up is True:
+                    # Po restartu může být chvíli UP. Případnou chybu neopakuj
+                    # rychleji než ACTION_RETRY_SECONDS.
+                    if last_attempt and now - last_attempt < ACTION_RETRY_SECONDS:
+                        continue
+                else:
+                    # Bez čerstvého live vzorku nedělej 15s blind reassert.
+                    if last_attempt and now - last_attempt < REASSERT_SECONDS:
+                        continue
+
+                with self.lock:
+                    self._last_reassert[key] = now
                 ok, detail = self._set_link(ip, port, True)
                 with self.lock:
-                    key = f"{ip}/{port}"
                     if ok:
                         self.last_errors.pop(key, None)
                     else:
                         self.last_errors[key] = detail
+
+        with self.lock:
+            for key in list(self._last_reassert):
+                if key not in active_keys:
+                    self._last_reassert.pop(key, None)
 
     def _loop(self) -> None:
         # Nech síť po startu Dockeru krátce ustálit.
@@ -326,6 +392,6 @@ def init_lan_port_control_v620(app: Any) -> LanPortController:
             except ValueError as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
             return jsonify(result), (200 if result.get("ok") else 409)
-
+    lan_port_controller.app = app
     lan_port_controller.start()
     return lan_port_controller

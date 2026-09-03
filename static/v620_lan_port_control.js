@@ -4,7 +4,7 @@
   window.__MESH_V620_LAN_PORT_CONTROL__ = true;
 
   const API = '/api/v620/lan-ports';
-  const POLL_MS = 5000;
+  const POLL_MS = 15000;
   let state = {blocked: {}, protected: {}};
   let loading = false;
 
@@ -85,7 +85,7 @@
       state = await response.json();
       decorate();
     } catch (err) {
-      console.error('v6.2.0 LAN port state:', err);
+      console.error('v7.0.0 LAN port state:', err);
     } finally {
       loading = false;
     }

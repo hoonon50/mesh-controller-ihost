@@ -61,8 +61,8 @@
 
       const next = data.next || {};
       nextBox.textContent = next.backup
-        ? `Další Nextcloud záloha: ${localDateTime(next.backup)} · OWUT: ${localDateTime(next.owut)} (vždy −10 minut)`
-        : 'Automatika se řídí výhradně nastavením automatického OWUT (vždy −10 minut).';
+        ? `Další automatická záloha + OWUT: ${localDateTime(next.owut)} · stejný plánovaný čas · Nextcloud ponechá posledních 10 záloh`
+        : 'Automatická záloha se řídí výhradně plánem OWUT a spouští se ve stejný čas. Nextcloud ponechá posledních 10 záloh.';
     } catch (err) {
       setStatus(`Chyba načtení: ${err.message}`, false);
     }

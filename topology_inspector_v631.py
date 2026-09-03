@@ -9,8 +9,9 @@ from typing import Any, Dict, List, Tuple
 from flask import jsonify, request
 
 from mesh_core import controller
+from client_ip_resolver_v632 import resolve_client_ipv4
 
-VERSION = "6.3.1"
+VERSION = "7.0.2"
 MAC_RE = re.compile(r"^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$", re.I)
 PORT_RE = re.compile(r"^lan([1-4])$", re.I)
 
@@ -225,10 +226,24 @@ def inspect_node(app: Any, ip: str) -> Dict[str, Any]:
         lan_by_port[port].difference_update(wifi5)
         lan_by_port[port].difference_update(wifi24)
 
+    # v6.3.2 active MAC -> IPv4 resolution
+    all_client_macs: set[str] = set(wifi5) | set(wifi24)
+    for _macs in lan_by_port.values():
+        all_client_macs.update(_macs)
+    unresolved_macs = {
+        mac for mac in all_client_macs
+        if not (
+            neigh_by_mac.get(mac)
+            or lease_by_mac.get(mac, {}).get("ip", "")
+            or snapshot_by_mac.get(mac, {}).get("ip", "")
+        )
+    }
+    resolved_ipv4 = resolve_client_ipv4(unresolved_macs) if unresolved_macs else {}
+
     def device(mac: str) -> Dict[str, str]:
         lease = lease_by_mac.get(mac, {})
         snap = snapshot_by_mac.get(mac, {})
-        dip = neigh_by_mac.get(mac) or lease.get("ip", "") or snap.get("ip", "")
+        dip = neigh_by_mac.get(mac) or lease.get("ip", "") or snap.get("ip", "") or resolved_ipv4.get(mac, "")
         hostname = snap.get("hostname", "") or lease.get("hostname", "")
         if dip and not hostname:
             hostname = snapshot_by_ip.get(dip, {}).get("hostname", "")

@@ -3,13 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OpenWRT MESH CONTROLLER PRO · v.7.0.0</title>
-  <link rel="stylesheet" href="/static/style.css?v=7.0.0">
+  <title>OpenWRT MESH CONTROLLER PRO · v.7.0.2</title>
+  <link rel="stylesheet" href="/static/style.css?v=7.0.2">
+  <style id="v369-health-style">
+.v369-health-card{box-sizing:border-box!important;min-height:108px!important;}
+.v369-health{height:38px!important;min-height:38px!important;box-sizing:border-box!important;margin-top:4px!important;padding-top:3px!important;border-top:1px solid rgba(255,255,255,.10)!important;font-size:10px!important;line-height:15px!important;color:#e8e8ec!important;white-space:nowrap!important;text-align:left!important;overflow:hidden!important;}
+.v369-health strong{color:#92929e!important;font-weight:700!important;}
+</style>
+  <link rel="stylesheet" href="/static/owut_manager.css?v=7.0.2">
+  <link rel="stylesheet" href="/static/wan_usage.css?v=7.0.2">
+  <link rel="stylesheet" href="/static/wan_history.css?v=7.0.2">
+  <link rel="stylesheet" href="/static/v500_operation.css?v=7.0.2">
+  <link rel="stylesheet" href="/static/v503_live_topology.css?v=7.0.2">
+  <link rel="stylesheet" href="/static/v620_lan_port_control.css?v=7.0.2">
+  <link rel="stylesheet" href="/static/v630_lan_port_inspector.css?v=7.0.2">
+  <link rel="stylesheet" href="/static/v631_topology_inspector.css?v=7.0.2">
+  <link rel="stylesheet" href="/static/v701_controller_backup.css?v=7.0.2">
 </head>
 <body>
 <header>
   <div>
-    <h1><span>OpenWRT MESH CONTROLLER PRO</span><span class="app-version">v.7.0.0</span></h1>
+    <h1><span>OpenWRT MESH CONTROLLER PRO</span><span class="app-version">v.7.0.2</span></h1>
     <p>SONOFF iHost · DOCKER · {{ ihost_ip }}</p>
   </div>
   <button id="refreshBtn" class="secondary">Obnovit stav</button>
@@ -74,11 +88,53 @@
     </article>
   </section>
 
+
+  <section class="card controller-backup-card" id="controllerBackupCard">
+    <div class="card-head"><div><h2>ZÁLOHA CONTROLLERU</h2></div></div>
+    <div class="controller-backup-grid">
+      <div class="controller-backup-panel">
+        <h3>RUČNÍ ZÁLOHA / OBNOVA</h3>
+        <div class="controller-backup-note">Záloha obsahuje nastavení a persistentní data Controlleru včetně měsíční WAN statistiky. Zálohy OpenWrt routerů v <b>/data/backups</b> se do tohoto archivu nezahrnují.</div>
+        <div class="controller-backup-actions">
+          <button id="cbExport" class="good-btn">STÁHNOUT DO PC</button>
+          <button id="cbImport" class="warn">IMPORTOVAT Z PC</button>
+          <input id="cbImportFile" type="file" accept=".tar.gz,.tgz,application/gzip">
+        </div>
+      </div>
+      <div class="controller-backup-panel">
+        <h3>NEXTCLOUD · AUTOMATICKY VE STEJNÝ ČAS JAKO OWUT</h3>
+        <div class="controller-backup-form">
+          <label for="cbNextcloudServer">IP / HOSTNAME / URL</label><input id="cbNextcloudServer" type="text" placeholder="https://nextcloud.example.cz nebo 192.168.30.x">
+          <label for="cbNextcloudUser">UŽIVATEL</label><input id="cbNextcloudUser" type="text" autocomplete="username">
+          <label for="cbNextcloudPassword">HESLO / APP PASSWORD</label><input id="cbNextcloudPassword" type="password" autocomplete="new-password">
+          <label for="cbNextcloudDir">CÍLOVÝ ADRESÁŘ</label><input id="cbNextcloudDir" type="text" value="/OpenWRT-MESH-CONTROLLER">
+        </div>
+        <div class="controller-backup-actions">
+          <button id="cbNextcloudTest" class="secondary">TEST PŘIPOJENÍ</button>
+          <button id="cbNextcloudSave" class="good-btn">ULOŽIT</button>
+        </div>
+        <div class="controller-backup-note">Den ani čas se zde nenastavuje. Automatická záloha se spustí stejným plánovaným triggerem jako OWUT; po úspěšném backupu OWUT pokračuje. Na Nextcloudu se ponechává posledních 10 automatických záloh.</div>
+      </div>
+    </div>
+    <div id="cbStatus" class="controller-backup-status">Načítám stav zálohy…</div>
+    <div id="cbNextRun" class="controller-backup-next"></div>
+  </section>
+
   <section class="card clients-card">
     <div class="card-head"><div><h2>Klienti</h2></div></div>
     <div class="table-wrap"><table><thead><tr><th>Router</th><th>Zařízení</th><th>IP</th><th>MAC</th><th>Typ</th><th>RÁDIO</th><th>Detail</th></tr></thead><tbody id="clientsBody"></tbody></table></div>
   </section>
 </main>
-<script src="/static/app.js?v=7.0.0"></script>
+<script src="/static/app.js?v=7.0.2"></script>
+  <script src="/static/v369.js?v=7.0.2"></script>
+  <script src="/static/owut_manager.js?v=7.0.2"></script>
+  <script src="/static/wan_usage.js?v=7.0.2"></script>
+  <script src="/static/wan_history.js?v=7.0.2"></script>
+  <script src="/static/v500_operation.js?v=7.0.2"></script>
+  <script src="/static/v503_live_topology.js?v=7.0.2"></script>
+  <script src="/static/v620_lan_port_control.js?v=7.0.2"></script>
+  <script src="/static/v630_lan_port_inspector.js?v=7.0.2"></script>
+  <script src="/static/v631_topology_inspector.js?v=7.0.2"></script>
+  <script src="/static/v701_controller_backup.js?v=7.0.2"></script>
 </body>
 </html>

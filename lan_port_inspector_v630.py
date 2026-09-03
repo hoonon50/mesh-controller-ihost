@@ -8,8 +8,9 @@ from typing import Any, Dict, List, Tuple
 from flask import jsonify, request
 
 from mesh_core import controller
+from client_ip_resolver_v632 import resolve_client_ipv4
 
-VERSION = "6.3.0"
+VERSION = "7.0.2"
 PORT_RE = re.compile(r"^lan([1-4])$", re.I)
 MAC_RE = re.compile(r"^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$", re.I)
 
@@ -174,11 +175,22 @@ printf '__LOCAL_END__\n'
         lease_by_mac[mac] = {"ip": lease_ip, "hostname": hostname}
 
     snapshot_by_mac, snapshot_by_ip = _snapshot_clients()
+    # v6.3.2 active MAC -> IPv4 resolution
+    unresolved_macs = {
+        mac for mac in fdb_macs
+        if not (
+            neigh_by_mac.get(mac)
+            or lease_by_mac.get(mac, {}).get("ip", "")
+            or snapshot_by_mac.get(mac, {}).get("ip", "")
+        )
+    }
+    resolved_ipv4 = resolve_client_ipv4(unresolved_macs) if unresolved_macs else {}
+
     devices: List[Dict[str, str]] = []
     for mac in sorted(fdb_macs):
         lease = lease_by_mac.get(mac, {})
         snap = snapshot_by_mac.get(mac, {})
-        device_ip = neigh_by_mac.get(mac) or lease.get("ip", "") or snap.get("ip", "")
+        device_ip = neigh_by_mac.get(mac) or lease.get("ip", "") or snap.get("ip", "") or resolved_ipv4.get(mac, "")
         hostname = snap.get("hostname", "") or lease.get("hostname", "")
         if device_ip and not hostname:
             hostname = snapshot_by_ip.get(device_ip, {}).get("hostname", "")

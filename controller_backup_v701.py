@@ -5,23 +5,25 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import ssl
 import tarfile
 import tempfile
 import threading
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from flask import after_this_request, jsonify, request, send_file
 
-VERSION = "7.0.1"
+VERSION = "7.0.2"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 SETTINGS_FILE = DATA_DIR / "controller_backup_settings.json"
 STATUS_FILE = DATA_DIR / "controller_backup_status.json"
@@ -30,6 +32,7 @@ RESTORE_STAGE = DATA_DIR / ".controller_restore_stage"
 RESTORE_MARKER = DATA_DIR / ".controller_restore_pending.json"
 MAX_IMPORT_BYTES = 128 * 1024 * 1024
 AUTO_RETRY_SECONDS = 120
+REMOTE_KEEP = 10
 
 EXCLUDED_TOP_LEVEL = {"backups", ".controller_restore_stage"}
 EXCLUDED_FILES = {
@@ -415,6 +418,42 @@ class ControllerBackupManager:
         remote = self._ensure_remote_dir(cfg)
         return {"ok": True, "remote": remote}
 
+    def _remote_controller_backups(self, cfg: Dict[str, Any], remote_dir: str) -> List[Tuple[str, str]]:
+        propfind = (
+            b'<?xml version="1.0" encoding="utf-8"?>'
+            b'<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>'
+        )
+        _status, _headers, body = self._dav_request(
+            "PROPFIND", remote_dir, cfg, data=propfind,
+            extra_headers={"Depth": "1", "Content-Type": "application/xml; charset=utf-8"},
+        )
+        try:
+            root = ET.fromstring(body)
+        except ET.ParseError as exc:
+            raise RuntimeError("Nextcloud WebDAV vrátil neplatný seznam souborů.") from exc
+
+        pattern = re.compile(r"^mesh-controller-backup_v[^_]+_(\d{8}-\d{6})\.tar\.gz$")
+        rows: List[Tuple[str, str]] = []
+        for response in root.findall(".//{DAV:}response"):
+            href = response.findtext("{DAV:}href") or ""
+            name = unquote(urlsplit(href).path.rstrip("/").rsplit("/", 1)[-1])
+            match = pattern.fullmatch(name)
+            if match:
+                rows.append((match.group(1), name))
+        rows.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        return rows
+
+    def _prune_nextcloud(self, cfg: Dict[str, Any], remote_dir: str, keep: int = REMOTE_KEEP) -> Dict[str, Any]:
+        rows = self._remote_controller_backups(cfg, remote_dir)
+        deleted: List[str] = []
+        for _stamp, name in rows[max(0, int(keep)):]:
+            target = remote_dir + quote(name, safe="")
+            status, _headers, _body = self._dav_request("DELETE", target, cfg)
+            if status not in {200, 202, 204}:
+                raise RuntimeError(f"Nextcloud DELETE vrátil HTTP {status} pro {name}.")
+            deleted.append(name)
+        return {"keep": int(keep), "found": len(rows), "deleted": len(deleted), "deleted_files": deleted}
+
     def upload_nextcloud(self, archive: Path, filename: str) -> Dict[str, Any]:
         cfg = self._settings_raw()
         if not self._configured(cfg):
@@ -429,7 +468,15 @@ class ControllerBackupManager:
         if status not in {200, 201, 204}:
             raise RuntimeError(f"Nextcloud PUT vrátil HTTP {status}.")
         self._dav_request("PROPFIND", target, cfg, data=b"", extra_headers={"Depth": "0"})
-        return {"ok": True, "url": target, "size": len(data)}
+
+        retention: Dict[str, Any] = {"keep": REMOTE_KEEP, "found": 0, "deleted": 0, "deleted_files": []}
+        try:
+            retention = self._prune_nextcloud(cfg, remote_dir, REMOTE_KEEP)
+        except Exception as exc:
+            # Upload je platný backup. Chyba úklidu starých souborů nesmí zrušit
+            # právě vytvořenou pojistku ani následný automatický OWUT.
+            retention["warning"] = str(exc)
+        return {"ok": True, "url": target, "size": len(data), "retention": retention}
 
     # -------------------------------------------------------------- schedule --
     @staticmethod
@@ -457,19 +504,8 @@ class ControllerBackupManager:
         return mode == "daily" or weekday == -1 or candidate.weekday() == weekday
 
     def _due_backup_occurrence(self, now: datetime) -> Optional[datetime]:
-        schedule = self._schedule_cfg()
-        if schedule is None:
-            return None
-        mode, weekday, hh, mm = schedule
-        for offset in (0, 1):
-            day = (now + timedelta(days=offset)).date()
-            candidate = datetime(day.year, day.month, day.day, hh, mm, tzinfo=LOCAL_TZ)
-            if not self._day_matches(candidate, mode, weekday):
-                continue
-            backup_at = candidate - timedelta(minutes=10)
-            if backup_at <= now < candidate:
-                return candidate
-        return None
+        # v7.0.2: žádné T-10 okno. Backup patří přímo do startu automatického OWUT.
+        return self._current_owut_occurrence(now)
 
     def _current_owut_occurrence(self, now: Optional[datetime] = None) -> Optional[datetime]:
         now = now or _now()
@@ -494,9 +530,9 @@ class ControllerBackupManager:
             candidate = datetime(day.year, day.month, day.day, hh, mm, tzinfo=LOCAL_TZ)
             if not self._day_matches(candidate, mode, weekday):
                 continue
-            backup_at = candidate - timedelta(minutes=10)
-            if backup_at > now:
-                return {"owut": candidate.isoformat(timespec="minutes"), "backup": backup_at.isoformat(timespec="minutes")}
+            if candidate > now:
+                stamp = candidate.isoformat(timespec="minutes")
+                return {"owut": stamp, "backup": stamp}
         return {"owut": "", "backup": ""}
 
     def _auto_backup_once(self, scheduled_for: datetime) -> Dict[str, Any]:
@@ -510,6 +546,9 @@ class ControllerBackupManager:
             "nextcloud_ok": False,
             "filename": "",
             "sha256": "",
+            "retention_keep": REMOTE_KEEP,
+            "retention_deleted": 0,
+            "retention_warning": "",
             "detail": "",
         }
         archive: Optional[Path] = None
@@ -519,10 +558,20 @@ class ControllerBackupManager:
             status["filename"] = filename
             status["local_backup_ok"] = True
             status["sha256"] = self._sha256(archive)
-            self.upload_nextcloud(archive, filename)
+            uploaded = self.upload_nextcloud(archive, filename)
+            retention = uploaded.get("retention") if isinstance(uploaded, dict) else {}
+            if not isinstance(retention, dict):
+                retention = {}
+            status["retention_deleted"] = int(retention.get("deleted") or 0)
+            status["retention_warning"] = str(retention.get("warning") or "")
             status["nextcloud_ok"] = True
             status["ok"] = True
-            status["detail"] = "Záloha Controlleru byla ověřena a uložena na Nextcloud."
+            status["detail"] = (
+                f"Záloha Controlleru byla ověřena a uložena na Nextcloud. "
+                f"Retence: max. {REMOTE_KEEP} záloh, smazáno {status['retention_deleted']} starších."
+            )
+            if status["retention_warning"]:
+                status["detail"] += f" Upozornění retence: {status['retention_warning']}"
         except Exception as exc:
             status["detail"] = str(exc)
         finally:
@@ -531,7 +580,10 @@ class ControllerBackupManager:
         _atomic_json_write(STATUS_FILE, status)
         return status
 
+
     def automatic_result_for_now(self) -> Dict[str, Any]:
+        # Volá se synchronně z _run_owut() po spuštění naplánované operace.
+        # Backup tedy začíná stejným scheduler triggerem jako OWUT, nikoli T-10.
         occurrence = self._current_owut_occurrence()
         if occurrence is None:
             return {
@@ -543,16 +595,9 @@ class ControllerBackupManager:
             }
         key = occurrence.isoformat(timespec="minutes")
         status = _read_json(STATUS_FILE, {})
-        if status.get("schedule_key") != key:
-            return {
-                "ok": False,
-                "local_backup_ok": False,
-                "nextcloud_ok": False,
-                "filename": "",
-                "scheduled_for": key,
-                "detail": "Předautomatická Nextcloud záloha pro tento termín není potvrzená.",
-            }
-        return status
+        if status.get("schedule_key") == key and bool(status.get("ok")):
+            return status
+        return self._auto_backup_once(occurrence)
 
     def status_public(self) -> Dict[str, Any]:
         status = _read_json(STATUS_FILE, {})
@@ -585,11 +630,10 @@ class ControllerBackupManager:
                 pass
 
     def start(self) -> None:
-        with self.lock:
-            if self.thread and self.thread.is_alive():
-                return
-            self.thread = threading.Thread(target=self._loop, daemon=True, name="controller-backup-v701")
-            self.thread.start()
+        # v7.0.2: samostatný backup scheduler je záměrně vypnutý.
+        # Automatický backup vlastní stejný trigger jako Persistent OWUT scheduler.
+        return
+
 
 
 _manager: Optional[ControllerBackupManager] = None

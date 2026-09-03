@@ -44,7 +44,7 @@
     manual.className = 'owut-panel owut-manual-panel';
     manual.innerHTML = `
       <div class="owut-title">OWUT SYSUPGRADE</div>
-      <div class="owut-sub">Oficiální OpenWrt upgrade přes owut · MESH1 → MESH4 → ROUTER · ROUTER používá dvojitý restart pro USB Extroot.</div>
+      <div class="owut-sub">Oficiální OpenWrt upgrade přes owut · MESH2 → MESH3 → MESH4 → MESH1 → ROUTER · ROUTER používá dvojitý restart pro USB Extroot.</div>
       <div class="owut-status-grid" id="owutStatusGrid"></div>
       <div class="owut-actions">
         <button class="owut-btn warn" id="owutCheckBtn">OWUT KONTROLA</button>

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import paramiko
 from flask import jsonify
 
-VERSION = "6.0.8"
+VERSION = "7.0.2"
 ROUTERS: List[Tuple[str, str]] = [
     ("192.168.30.1", "ROUTER"),
     ("192.168.30.2", "MESH1"),
@@ -26,8 +26,8 @@ ROUTERS: List[Tuple[str, str]] = [
 SSH_USER = os.environ.get("MESH_SSH_USER", "root")
 SSH_PASS = os.environ.get("MESH_SSH_PASS", "root")
 SSH_TIMEOUT = max(2, int(os.environ.get("MESH_SSH_TIMEOUT", "6")))
-POLL_SECONDS = max(3, int(os.environ.get("MESH_LIVE_TOPOLOGY_POLL", "5")))
-HEALTH_SECONDS = max(POLL_SECONDS, int(os.environ.get("MESH_LIVE_HEALTH_POLL", "15")))
+POLL_SECONDS = max(10, int(os.environ.get("MESH_LIVE_TOPOLOGY_POLL", "15")))
+HEALTH_SECONDS = max(POLL_SECONDS, int(os.environ.get("MESH_LIVE_HEALTH_POLL", "30")))
 NODE_FAILURE_GRACE = max(1, int(os.environ.get("MESH_NODE_FAILURE_GRACE", "2")))
 LAN_CLIENT_TTL_SECONDS = max(POLL_SECONDS, int(os.environ.get("MESH_LAN_CLIENT_TTL", "45")))
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -184,6 +184,7 @@ class LiveTopologyCollector:
                 "wifi_client_macs_24": [],
                 "wifi_client_macs_5": [],
                 "lan_client_macs": [],
+                "ports": [],
                 "_wifi_bss_samples": {},
                 "error": "čekám na první vzorek",
                 "updated_at": "",
@@ -269,6 +270,17 @@ if command -v bridge >/dev/null 2>&1; then
   bridge fdb show br br-lan 2>/dev/null || bridge fdb show 2>/dev/null || true
 fi
 printf '__FDB_END__\n'
+
+printf '__PORTS_BEGIN__\n'
+for P in lan1 lan2 lan3 lan4; do
+  [ -e "/sys/class/net/$P" ] || continue
+  OPER="$(cat /sys/class/net/$P/operstate 2>/dev/null || echo unknown)"
+  CARRIER="$(cat /sys/class/net/$P/carrier 2>/dev/null || echo 0)"
+  SPEED="$(cat /sys/class/net/$P/speed 2>/dev/null || true)"
+  case "$SPEED" in ''|*[!0-9]*) SPEED='' ;; esac
+  printf '%s\t%s\t%s\t%s\n' "$P" "$OPER" "$CARRIER" "$SPEED"
+done
+printf '__PORTS_END__\n'
 '''
         ssh = self._connect(ip)
         try:
@@ -429,6 +441,31 @@ printf '__FDB_END__\n'
         lan_macs.difference_update(wifi24)
         lan_macs.difference_update(wifi5)
 
+        # v6.3.3 live physical LAN ports
+        ports: List[Dict[str, Any]] = []
+        ports_match = re.search(r"__PORTS_BEGIN__\n(.*?)__PORTS_END__", out, re.S)
+        if ports_match:
+            for raw in ports_match.group(1).splitlines():
+                parts = raw.strip().split("\t")
+                if len(parts) < 3 or not re.fullmatch(r"lan[1-4]", parts[0], re.I):
+                    continue
+                pname = parts[0].lower()
+                oper = parts[1].strip().lower() or "unknown"
+                carrier = parts[2].strip() == "1"
+                speed = None
+                if len(parts) > 3 and parts[3].strip().isdigit():
+                    value = int(parts[3].strip())
+                    if value > 0:
+                        speed = value
+                ports.append({
+                    "name": pname,
+                    "up": carrier,
+                    "operstate": oper,
+                    "carrier": 1 if carrier else 0,
+                    "speed_mbps": speed,
+                })
+        ports.sort(key=lambda row: int(str(row.get("name") or "lan99")[3:]) if str(row.get("name") or "").startswith("lan") else 99)
+
         try:
             uptime_s: Optional[int] = int(float(sys_values.get("UPTIME", "")))
         except (TypeError, ValueError):
@@ -456,6 +493,7 @@ printf '__FDB_END__\n'
             "wifi_client_macs_24": sorted(wifi24),
             "wifi_client_macs_5": sorted(wifi5),
             "lan_client_macs": sorted(lan_macs),
+            "ports": ports,
             "_lan_observed_macs": sorted(lan_macs),
             "_wifi_bss_samples": bss_samples,
             "_wifi_sample_ok": hostapd_failed == 0 and bool(bss_samples),
@@ -691,6 +729,7 @@ printf '__FDB_END__\n'
                             "wifi_client_macs_24": [],
                             "wifi_client_macs_5": [],
                             "lan_client_macs": [],
+                            "ports": [],
                             "_wifi_bss_samples": {},
                             "_sample_ok": False,
                             "error": str(exc),

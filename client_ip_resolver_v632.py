@@ -8,7 +8,7 @@ from typing import Dict, Iterable, Tuple
 
 from mesh_core import controller
 
-VERSION = "6.3.2"
+VERSION = "7.0.2"
 MAIN_ROUTER_IP = os.environ.get("MESH_MAIN_ROUTER_IP", "192.168.30.1")
 SWEEP_SECONDS = max(15, int(os.environ.get("MESH_IP_RESOLVE_SWEEP_SECONDS", "60")))
 CACHE_SECONDS = max(60, int(os.environ.get("MESH_IP_RESOLVE_CACHE_SECONDS", "300")))

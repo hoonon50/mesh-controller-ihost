@@ -6,9 +6,50 @@ import time
 from pathlib import Path
 from flask import Flask, jsonify, render_template, request, send_file
 
-from mesh_core import controller
+# v7.0.1 controller restore before /data consumers
+from controller_backup_v701 import apply_pending_restore
+apply_pending_restore()
 
+from mesh_core import controller
 app = Flask(__name__)
+
+
+
+
+
+
+
+
+# v6.3.1 topology node device inspector
+from topology_inspector_v631 import init_topology_inspector_v631
+init_topology_inspector_v631(app)
+
+# v6.3.0 LAN port device inspector
+from lan_port_inspector_v630 import init_lan_port_inspector_v630
+init_lan_port_inspector_v630(app)
+
+# v6.2.0 LAN port runtime control
+from lan_port_control_v620 import init_lan_port_control_v620
+init_lan_port_control_v620(app)
+
+# v6.0.0 silent AP inactivity policy
+from wifi_ap_policy_v600 import init_wifi_ap_policy_v600
+init_wifi_ap_policy_v600(app)
+
+# v5.0.7 explicit live topology API
+from live_topology_v503 import init_live_topology_v503
+init_live_topology_v503(app)
+
+# v5.0.0 persistent operation manager
+from mesh_operation_manager import init_operation_manager
+init_operation_manager(app)
+
+# v7.0.1 controller backup manager
+from controller_backup_v701 import init_controller_backup_v701
+init_controller_backup_v701(app)
+# v3.8.9 WAN usage
+from wan_usage import init_wan_usage
+init_wan_usage(app)
 
 def get_ihost_ip() -> str:
     """Vrátí IPv4 adresu iHostu použitou pro cestu do LAN s routery."""
@@ -96,9 +137,17 @@ def refresh_loop():
         try: controller.refresh_snapshot()
         except Exception: pass
         seconds = int(controller.cfg.get("refresh_seconds", 30) or 30)
-        time.sleep(max(15, seconds))
+        time.sleep(max(60, seconds))
 
 threading.Thread(target=refresh_loop, daemon=True).start()
+
+# v3.6.12 – CPU teplota + uptime v topologii
+from v369_extra import register_v369
+register_v369(app, controller)
+
+# v3.8.7 – daily schedule + reliable automatic reports
+from owut_manager import register_owut_manager
+register_owut_manager(app, controller)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8088, debug=False)

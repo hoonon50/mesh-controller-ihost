@@ -5,8 +5,6 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 VERSION = "6.3.6"
-
-
 def _normalize_temp(raw: str) -> Optional[float]:
     try:
         value = float(str(raw).strip())

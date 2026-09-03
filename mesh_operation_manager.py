@@ -5,6 +5,7 @@ import html
 import json
 import os
 import re
+import shlex
 import smtplib
 import ssl
 import threading
@@ -13,13 +14,14 @@ import uuid
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
+from ihost_temperature_v636 import read_ihost_temperature
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import paramiko
 from flask import jsonify, request
 
-VERSION = "6.0.0"
+VERSION = "7.0.2"
 MAIN_IP = "192.168.30.1"
 IHOT_MESH_IP = "192.168.30.2"
 ROUTERS: List[Tuple[str, str]] = [
@@ -36,6 +38,13 @@ ROLLING_ORDER: List[Tuple[str, str]] = [
     ("192.168.30.5", "MESH4"),
     ("192.168.30.2", "MESH1"),
     ("192.168.30.1", "ROUTER"),
+]
+REBOOT_ORDER = [
+    ("192.168.30.3", "MESH2"),
+    ("192.168.30.4", "MESH3"),
+    ("192.168.30.5", "MESH4"),
+    ("192.168.30.1", "ROUTER"),
+    ("192.168.30.2", "MESH1"),
 ]
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -132,6 +141,7 @@ def _default_state() -> Dict[str, Any]:
         "backup_id": "",
         "backup_dir": "",
         "owut_checks": {},
+        "controller_backup": {},
         "pre_overlay": {},
         "nodes": _default_node_states(),
         "log": [],
@@ -462,84 +472,356 @@ printf 'HOSTNAME=%s\nBOOT_ID=%s\nREVISION=%s\nVERSION=%s\nUPTIME=%s\nOVERLAY=%s\
         }
 
     def _start_owut_detached(self, ip: str) -> None:
-        # Bez --force. RC soubor vznikne pouze pokud owut skončí bez rebootu.
+        add = ""
+        if ip == MAIN_IP:
+            add = " --add block-mount,kmod-fs-ext4,kmod-usb-storage,kmod-usb-storage-uas"
+        owut_cmd = f"owut upgrade --verbose{add}"
+        inner = (
+            "trap '' HUP; "
+            f"{owut_cmd}; "
+            "rc=$?; printf '%s\\n' \"$rc\" > /tmp/v500_owut.rc; exit \"$rc\""
+        )
         command = (
-            "rm -f /tmp/v500_owut.rc /tmp/v500_owut.log; "
-            "nohup sh -c 'owut upgrade --verbose > /tmp/v500_owut.log 2>&1; "
-            "echo $? > /tmp/v500_owut.rc' >/dev/null 2>&1 & echo STARTED"
+            "rm -f /tmp/v500_owut.rc /tmp/v500_owut.log /tmp/v500_owut.pid; "
+            ": > /tmp/v500_owut.log; "
+            f"sh -c {shlex.quote(inner)} >> /tmp/v500_owut.log 2>&1 </dev/null & "
+            "pid=$!; printf '%s\\n' \"$pid\" > /tmp/v500_owut.pid; "
+            "sleep 2; "
+            "if kill -0 \"$pid\" 2>/dev/null; then printf 'STARTED PID=%s\\n' \"$pid\"; exit 0; fi; "
+            "if [ -s /tmp/v500_owut.rc ]; then "
+            "  rc=$(cat /tmp/v500_owut.rc 2>/dev/null || echo 255); "
+            "  printf 'EXIT=%s\\n' \"$rc\"; tail -n 20 /tmp/v500_owut.log 2>/dev/null || true; "
+            "  [ \"$rc\" = 0 ] && exit 0; exit 23; "
+            "fi; "
+            "printf 'FAILED PID=%s\\n' \"$pid\"; tail -n 20 /tmp/v500_owut.log 2>/dev/null || true; exit 24"
         )
         out, err, code = self._exec(ip, command, timeout=20)
-        if code != 0 or "STARTED" not in out:
-            raise RuntimeError(f"OWUT upgrade se na {ip} nepodařilo spustit: {(err or out).strip()}")
+        detail = (out + ("\n" + err if err else "")).strip()
+        if code != 0 or ("STARTED PID=" not in out and "EXIT=0" not in out):
+            raise RuntimeError(f"OWUT upgrade se na {ip} nepodařilo spustit: {detail or f'rc={code}'}")
+        self._log(f"OWUT {ip}: proces potvrzen – {detail.splitlines()[0] if detail else 'STARTED'}")
 
     def _wait_owut_reboot(self, ip: str, name: str, before_boot: str) -> Dict[str, Any]:
-        deadline = time.monotonic() + OWUT_TIMEOUT
-        saw_offline = False
+        started = time.monotonic()
+        deadline = started + OWUT_TIMEOUT
+        last_heartbeat = 0.0
+        last_log = ""
+        dead_without_result = 0
+
         while time.monotonic() < deadline:
             self._check_cancel()
+            if not self._is_online(ip):
+                self._log(f"{name} ({ip}): router se restartuje po OWUT, čekám na návrat.")
+                return self._wait_online_stable(ip, ONLINE_TIMEOUT)
+
             try:
                 info = self._router_info(ip)
                 if before_boot and info.get("boot_id") != before_boot:
                     self._log(f"{name} ({ip}): po OWUT již běží s novým boot_id.")
                     return self._wait_online_stable(ip, ONLINE_TIMEOUT)
-                # OWUT mohl skončit chybou nebo zjistit, že není co dělat.
+
                 out, _err, _code = self._exec(
                     ip,
-                    "if [ -f /tmp/v500_owut.rc ]; then echo RC=$(cat /tmp/v500_owut.rc); tail -n 30 /tmp/v500_owut.log 2>/dev/null; fi",
+                    "printf 'RC='; cat /tmp/v500_owut.rc 2>/dev/null || true; printf '\\n'; "
+                    "pid=$(cat /tmp/v500_owut.pid 2>/dev/null || true); printf 'PID=%s\\n' \"$pid\"; "
+                    "if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then echo 'RUNNING=1'; else echo 'RUNNING=0'; fi; "
+                    "echo '__LOG__'; tail -n 25 /tmp/v500_owut.log 2>/dev/null || true",
                     timeout=15,
                 )
-                m = re.search(r"^RC=(\d+)", out, re.M)
+                m = re.search(r"^RC=(\d+)\s*$", out, re.M)
+                log_part = out.split("__LOG__", 1)[1].strip() if "__LOG__" in out else ""
+                if log_part:
+                    last_log = log_part
+
                 if m:
                     rc = int(m.group(1))
                     if rc != 0:
-                        raise RuntimeError(f"OWUT {name} ({ip}) skončil rc={rc}: {out[-1800:]}")
-                    # RC 0 bez rebootu - počkáme krátce na případný odložený sysupgrade.
+                        raise RuntimeError(f"OWUT {name} ({ip}) skončil rc={rc}: {(last_log or out)[-1800:]}")
                     time.sleep(10)
                     try:
                         again = self._router_info(ip)
                         if before_boot and again.get("boot_id") == before_boot:
-                            raise RuntimeError(f"OWUT {name} ({ip}) skončil bez restartu: {out[-1800:]}")
+                            raise RuntimeError(
+                                f"OWUT {name} ({ip}) skončil rc=0 bez restartu: {(last_log or out)[-1800:]}"
+                            )
+                        return self._wait_online_stable(ip, ONLINE_TIMEOUT)
                     except RuntimeError:
                         raise
                     except Exception:
-                        saw_offline = True
-                        break
+                        return self._wait_online_stable(ip, ONLINE_TIMEOUT)
+
+                running = bool(re.search(r"^RUNNING=1\s*$", out, re.M))
+                if running:
+                    dead_without_result = 0
+                elif not last_log:
+                    dead_without_result += 1
+                    if dead_without_result >= 2:
+                        raise RuntimeError(
+                            f"OWUT {name} ({ip}) neběží a nevznikl log ani návratový kód; launcher selhal."
+                        )
+                else:
+                    dead_without_result = 0
+
+                now = time.monotonic()
+                if now - last_heartbeat >= 30:
+                    last_heartbeat = now
+                    elapsed = max(0, int(now - started))
+                    mm, ss = divmod(elapsed, 60)
+                    total_mm, total_ss = divmod(OWUT_TIMEOUT, 60)
+                    tail = ""
+                    if last_log:
+                        for line in reversed(last_log.splitlines()):
+                            clean = " ".join(line.split())
+                            if clean:
+                                tail = clean[:180]
+                                break
+                    msg = f"{name} ({ip}): OWUT běží {mm:02d}:{ss:02d} / {total_mm:02d}:{total_ss:02d}"
+                    if tail:
+                        msg += f" · {tail}"
+                    self._log(msg)
             except RuntimeError:
                 raise
             except Exception:
-                saw_offline = True
-                break
+                # Krátký SSH výpadek může být začátek sysupgrade rebootu.
+                time.sleep(5)
+                if not self._is_online(ip):
+                    self._log(f"{name} ({ip}): router se restartuje po OWUT, čekám na návrat.")
+                    return self._wait_online_stable(ip, ONLINE_TIMEOUT)
+
             time.sleep(10)
 
-        if not saw_offline:
-            raise TimeoutError(f"OWUT {name} ({ip}) nevyvolal restart do {OWUT_TIMEOUT} s.")
-        self._log(f"{name} ({ip}): během OWUT zmizel ze sítě, čekám na návrat.")
-        return self._wait_online_stable(ip, ONLINE_TIMEOUT)
+        detail = f"OWUT {name} ({ip}) nevyvolal restart do {OWUT_TIMEOUT} s."
+        if last_log:
+            detail += " Poslední log: " + " | ".join(last_log.splitlines()[-6:])[-1000:]
+        raise TimeoutError(detail)
+
+
+    def _validate_and_restore_extroot_first_boot(self, expected_uuid: str) -> str:
+        expected_uuid = str(expected_uuid or "").strip()
+        if not re.fullmatch(r"[0-9A-Fa-f-]{16,64}", expected_uuid):
+            raise RuntimeError(f"ROUTER .1: neplatné referenční UUID Extrootu ({expected_uuid or 'N/A'}).")
+
+        script = "EXPECTED=" + shlex.quote(expected_uuid) + r'''
+set -e
+CUR_OVERLAY="$(df -P /overlay 2>/dev/null | awk 'NR==2 {print $1}')"
+case "$CUR_OVERLAY" in
+  /dev/sd*) echo "ERROR=first_boot_already_usb:$CUR_OVERLAY"; exit 41 ;;
+esac
+
+. /etc/openwrt_release 2>/dev/null || true
+[ -n "${DISTRIB_RELEASE:-}" ] || { echo 'ERROR=release_missing'; exit 42; }
+[ -n "${DISTRIB_REVISION:-}" ] || { echo 'ERROR=revision_missing'; exit 43; }
+for C in uci block blkid owut; do
+  command -v "$C" >/dev/null 2>&1 || { echo "ERROR=command_missing:$C"; exit 44; }
+done
+
+grep -qw ext4 /proc/filesystems 2>/dev/null || { echo 'ERROR=ext4_not_available'; exit 45; }
+PKG_LIST="$(apk list --installed 2>/dev/null || opkg list-installed 2>/dev/null || true)"
+MISSING=""
+for P in block-mount kmod-fs-ext4 kmod-usb-storage kmod-usb-storage-uas; do
+  printf '%s\n' "$PKG_LIST" | grep -Eq "^${P}([ -]|$)" || MISSING="$MISSING $P"
+done
+[ -z "$MISSING" ] || { echo "ERROR=packages_missing:$MISSING"; exit 46; }
+
+USB_DEV="$(block info 2>/dev/null | awk -v u="$EXPECTED" 'index($0, "UUID=\"" u "\"") {sub(/:.*/, "", $1); print $1; exit}')"
+[ -n "$USB_DEV" ] || { echo "ERROR=usb_uuid_not_found:$EXPECTED"; block info 2>/dev/null || true; exit 47; }
+case "$USB_DEV" in
+  /dev/sd[a-z][0-9]*) ;;
+  *) echo "ERROR=unexpected_usb_device:$USB_DEV"; exit 48 ;;
+esac
+[ -b "$USB_DEV" ] || { echo "ERROR=usb_not_block_device:$USB_DEV"; exit 49; }
+ACTUAL_UUID="$(blkid -s UUID -o value "$USB_DEV" 2>/dev/null || true)"
+ACTUAL_TYPE="$(blkid -s TYPE -o value "$USB_DEV" 2>/dev/null || true)"
+[ "$ACTUAL_UUID" = "$EXPECTED" ] || { echo "ERROR=uuid_mismatch:$ACTUAL_UUID"; exit 50; }
+[ "$ACTUAL_TYPE" = "ext4" ] || { echo "ERROR=filesystem_not_ext4:$ACTUAL_TYPE"; exit 51; }
+
+uci -q delete fstab.extroot || true
+uci set fstab.extroot='mount'
+uci set fstab.extroot.uuid="$EXPECTED"
+uci set fstab.extroot.target='/overlay'
+uci set fstab.extroot.fstype='ext4'
+uci set fstab.extroot.enabled='1'
+uci commit fstab
+sync
+
+[ "$(uci -q get fstab.extroot.uuid || true)" = "$EXPECTED" ] || { echo 'ERROR=fstab_uuid_verify'; exit 52; }
+[ "$(uci -q get fstab.extroot.target || true)" = "/overlay" ] || { echo 'ERROR=fstab_target_verify'; exit 53; }
+[ "$(uci -q get fstab.extroot.fstype || true)" = "ext4" ] || { echo 'ERROR=fstab_type_verify'; exit 54; }
+[ "$(uci -q get fstab.extroot.enabled || true)" = "1" ] || { echo 'ERROR=fstab_enabled_verify'; exit 55; }
+
+printf 'OK=1\nOPENWRT=%s\nREVISION=%s\nINTERNAL_OVERLAY=%s\nUSB_DEV=%s\nUUID=%s\nTYPE=%s\n' \
+  "$DISTRIB_RELEASE" "$DISTRIB_REVISION" "$CUR_OVERLAY" "$USB_DEV" "$ACTUAL_UUID" "$ACTUAL_TYPE"
+'''
+        out, err, code = self._exec(MAIN_IP, script, timeout=30)
+        detail = (out + ("\n" + err if err else "")).strip()
+        if code != 0 or "OK=1" not in out:
+            diag_out, diag_err, _diag_code = self._exec(
+                MAIN_IP,
+                "echo '--- overlay ---'; df -P /overlay 2>/dev/null || true; "
+                "echo '--- fstab ---'; uci show fstab 2>/dev/null || true; "
+                "echo '--- block ---'; block info 2>/dev/null || true; "
+                "echo '--- extroot log ---'; logread 2>/dev/null | grep -iE 'extroot|mount_root|block:|sda|overlay' | tail -n 35 || true",
+                timeout=20,
+            )
+            diag = (diag_out + ("\n" + diag_err if diag_err else "")).strip()
+            raise RuntimeError(
+                "ROUTER .1: first-boot Extroot kontrola/obnova selhala: "
+                + (detail or f"rc={code}")
+                + (" | " + diag[-2500:] if diag else "")
+            )
+        return detail
+
+    def _repair_extroot_fstab_fallback(self, expected_uuid: str) -> str:
+        expected_uuid = str(expected_uuid or "").strip()
+        if not re.fullmatch(r"[0-9A-Fa-f-]{16,64}", expected_uuid):
+            raise RuntimeError(f"ROUTER .1: neplatné referenční UUID Extrootu ({expected_uuid or 'N/A'}).")
+
+        script = "EXPECTED=" + shlex.quote(expected_uuid) + r'''
+set -e
+CUR_OVERLAY="$(df -P /overlay 2>/dev/null | awk 'NR==2 {print $1}')"
+case "$CUR_OVERLAY" in
+  /dev/sd*) echo "ERROR=already_usb:$CUR_OVERLAY"; exit 61 ;;
+esac
+
+for C in uci block blkid; do
+  command -v "$C" >/dev/null 2>&1 || { echo "ERROR=command_missing:$C"; exit 62; }
+done
+
+USB_DEV="$(block info 2>/dev/null | awk -v u="$EXPECTED" 'index($0, "UUID=\"" u "\"") {sub(/:.*/, "", $1); print $1; exit}')"
+if [ -z "$USB_DEV" ]; then
+  for D in /dev/sd[a-z][0-9]*; do
+    [ -b "$D" ] || continue
+    U="$(blkid -s UUID -o value "$D" 2>/dev/null || true)"
+    [ "$U" = "$EXPECTED" ] && { USB_DEV="$D"; break; }
+  done
+fi
+[ -n "$USB_DEV" ] || { echo "ERROR=usb_uuid_not_found:$EXPECTED"; block info 2>/dev/null || true; exit 63; }
+case "$USB_DEV" in
+  /dev/sd[a-z][0-9]*) ;;
+  *) echo "ERROR=unexpected_usb_device:$USB_DEV"; exit 64 ;;
+esac
+[ -b "$USB_DEV" ] || { echo "ERROR=usb_not_block_device:$USB_DEV"; exit 65; }
+
+ACTUAL_UUID="$(blkid -s UUID -o value "$USB_DEV" 2>/dev/null || true)"
+ACTUAL_TYPE="$(blkid -s TYPE -o value "$USB_DEV" 2>/dev/null || true)"
+[ "$ACTUAL_UUID" = "$EXPECTED" ] || { echo "ERROR=uuid_mismatch:$ACTUAL_UUID"; exit 66; }
+[ "$ACTUAL_TYPE" = "ext4" ] || { echo "ERROR=filesystem_not_ext4:$ACTUAL_TYPE"; exit 67; }
+
+uci -q delete fstab.extroot || true
+uci set fstab.extroot='mount'
+uci set fstab.extroot.uuid="$EXPECTED"
+uci set fstab.extroot.target='/overlay'
+uci set fstab.extroot.fstype='ext4'
+uci set fstab.extroot.enabled='1'
+uci commit fstab
+sync
+
+[ "$(uci -q get fstab.extroot.uuid || true)" = "$EXPECTED" ] || { echo 'ERROR=fstab_uuid_verify'; exit 68; }
+[ "$(uci -q get fstab.extroot.target || true)" = "/overlay" ] || { echo 'ERROR=fstab_target_verify'; exit 69; }
+[ "$(uci -q get fstab.extroot.fstype || true)" = "ext4" ] || { echo 'ERROR=fstab_type_verify'; exit 70; }
+[ "$(uci -q get fstab.extroot.enabled || true)" = "1" ] || { echo 'ERROR=fstab_enabled_verify'; exit 71; }
+
+printf 'OK=1\nINTERNAL_OVERLAY=%s\nUSB_DEV=%s\nUUID=%s\nTYPE=%s\n' \
+  "$CUR_OVERLAY" "$USB_DEV" "$ACTUAL_UUID" "$ACTUAL_TYPE"
+'''
+        out, err, code = self._exec(MAIN_IP, script, timeout=30)
+        detail = (out + ("\n" + err if err else "")).strip()
+        if code != 0 or "OK=1" not in out:
+            diag_out, diag_err, _diag_code = self._exec(
+                MAIN_IP,
+                "echo '--- overlay ---'; df -P /overlay 2>/dev/null || true; "
+                "echo '--- fstab ---'; uci show fstab 2>/dev/null || true; "
+                "echo '--- block ---'; block info 2>/dev/null || true; "
+                "echo '--- blkid ---'; blkid /dev/sd* 2>/dev/null || true; "
+                "echo '--- extroot log ---'; logread 2>/dev/null | grep -iE 'extroot|mount_root|block:|sda|overlay' | tail -n 45 || true",
+                timeout=20,
+            )
+            diag = (diag_out + ("\n" + diag_err if diag_err else "")).strip()
+            raise RuntimeError(
+                "ROUTER .1: fallback obnova interního fstab.extroot selhala: "
+                + (detail or f"rc={code}")
+                + (" | " + diag[-3000:] if diag else "")
+            )
+        return detail
 
     def _second_router_reboot_if_extroot(self, index: int, before_overlay: Dict[str, Any]) -> Dict[str, Any]:
         source = str(before_overlay.get("overlay") or "")
+        expected_uuid = str(before_overlay.get("overlay_uuid") or "").strip()
         if not source.startswith("/dev/sd"):
-            return self._router_info(MAIN_IP)
+            raise RuntimeError(
+                f"ROUTER .1: před sysupgrade nebyl aktivní USB Extroot ({source or 'N/A'}); automatický Extroot návrat zrušen."
+            )
+        if not expected_uuid:
+            raise RuntimeError("ROUTER .1: před sysupgrade nebylo zjištěno UUID USB Extrootu.")
 
-        self._set(stage="router_second_reboot", current_index=index, current_ip=MAIN_IP,
-                  current_name="ROUTER", action_sent=False, progress=96)
-        self._log("ROUTER .1 používal USB Extroot. Provádím druhý řízený restart.")
-        before = self._router_info(MAIN_IP)
+        first = self._wait_online_stable(MAIN_IP, ONLINE_TIMEOUT)
+        first_source = str(first.get("overlay") or "")
+        first_uuid = str(first.get("overlay_uuid") or "")
+        if first_source.startswith("/dev/sd"):
+            if first_uuid.lower() != expected_uuid.lower():
+                raise RuntimeError(
+                    f"ROUTER .1: Extroot je aktivní už po prvním bootu, ale UUID nesouhlasí ({first_uuid or 'N/A'} != {expected_uuid})."
+                )
+            self._log(f"ROUTER .1: USB Extroot je aktivní už po prvním bootu ({first_source}); další reboot není nutný.")
+            return first
+
+        self._set(stage="router_extroot_second_reboot", current_index=index, current_ip=MAIN_IP,
+                  current_name="ROUTER", action_sent=False, progress=94)
+        self._log(
+            f"ROUTER .1: první boot po sysupgrade je na interním overlay ({first_source or 'N/A'}) – "
+            "to je pro Extroot očekávané. Čekám 15 s na dokončení first-boot služeb a provedu standardní druhý reboot bez změny fstab."
+        )
+        time.sleep(15)
+
+        before_second = self._router_info(MAIN_IP)
+        self._send_reboot(MAIN_IP)
+        self._set(action_sent=True, action_sent_at=_now_text(), status="waiting", progress=95)
+        self._wait_offline(MAIN_IP, OFFLINE_TIMEOUT)
+        second = self._wait_online_stable(MAIN_IP, ONLINE_TIMEOUT)
+        if before_second.get("boot_id") and second.get("boot_id") == before_second.get("boot_id"):
+            raise RuntimeError("ROUTER .1: druhý reboot nepotvrdil změnu boot_id.")
+
+        second_source = str(second.get("overlay") or "")
+        second_uuid = str(second.get("overlay_uuid") or "")
+        if second_source.startswith("/dev/sd"):
+            if second_uuid.lower() != expected_uuid.lower():
+                raise RuntimeError(
+                    f"ROUTER .1: po druhém bootu je USB overlay aktivní, ale UUID nesouhlasí ({second_uuid or 'N/A'} != {expected_uuid})."
+                )
+            self._log(f"ROUTER .1: druhý boot OK – USB Extroot {second_source}, UUID {second_uuid}.")
+            return second
+
+        self._set(stage="router_extroot_fallback_repair", current_index=index, current_ip=MAIN_IP,
+                  current_name="ROUTER", action_sent=False, status="running", progress=96)
+        self._log(
+            f"ROUTER .1: po standardním druhém bootu je stále interní overlay ({second_source or 'N/A'}). "
+            "Spouštím automatický fallback: ověřím USB podle původního UUID a opravím pouze interní fstab.extroot."
+        )
+        repair = self._repair_extroot_fstab_fallback(expected_uuid)
+        self._log("ROUTER .1: fallback fstab.extroot ověřen – " + repair.replace("\n", " | ")[:700])
+
+        before_third = self._router_info(MAIN_IP)
+        self._set(stage="router_extroot_fallback_reboot", action_sent=False, progress=97)
         self._send_reboot(MAIN_IP)
         self._set(action_sent=True, action_sent_at=_now_text(), status="waiting")
         self._wait_offline(MAIN_IP, OFFLINE_TIMEOUT)
-        after = self._wait_online_stable(MAIN_IP, ONLINE_TIMEOUT)
-        if before.get("boot_id") and after.get("boot_id") == before.get("boot_id"):
-            raise RuntimeError("ROUTER .1: druhý restart nepotvrdil změnu boot_id.")
-        current_source = str(after.get("overlay") or "")
-        if not current_source.startswith("/dev/sd"):
-            raise RuntimeError(f"ROUTER .1: USB overlay po druhém restartu není aktivní ({current_source or 'N/A'}).")
-        old_uuid = str(before_overlay.get("overlay_uuid") or "")
-        new_uuid = str(after.get("overlay_uuid") or "")
-        if old_uuid and new_uuid and old_uuid != new_uuid:
-            raise RuntimeError(f"ROUTER .1: UUID overlay se změnilo ({old_uuid} -> {new_uuid}).")
-        self._log(f"ROUTER .1: USB overlay aktivní ({current_source}), UUID ověřeno.")
-        return after
+        third = self._wait_online_stable(MAIN_IP, ONLINE_TIMEOUT)
+        if before_third.get("boot_id") and third.get("boot_id") == before_third.get("boot_id"):
+            raise RuntimeError("ROUTER .1: fallback reboot nepotvrdil změnu boot_id.")
+
+        third_source = str(third.get("overlay") or "")
+        third_uuid = str(third.get("overlay_uuid") or "")
+        if not third_source.startswith("/dev/sd"):
+            raise RuntimeError(
+                f"ROUTER .1: ani po fallback opravě není USB Extroot aktivní ({third_source or 'N/A'})."
+            )
+        if third_uuid.lower() != expected_uuid.lower():
+            raise RuntimeError(
+                f"ROUTER .1: fallback aktivoval USB, ale UUID nesouhlasí ({third_uuid or 'N/A'} != {expected_uuid})."
+            )
+        self._log(f"ROUTER .1: fallback úspěšný – USB Extroot {third_source}, UUID {third_uuid}.")
+        return third
+
 
     def _owut_one(self, index: int, ip: str, name: str, check: Dict[str, Any], resume: bool = False) -> None:
         if not check.get("available"):
@@ -562,10 +844,20 @@ printf 'HOSTNAME=%s\nBOOT_ID=%s\nREVISION=%s\nVERSION=%s\nUPTIME=%s\nOVERLAY=%s\
                               before_boot_id=before_boot, before_revision=info.get("revision", ""),
                               temperature_c=info.get("temperature_c"))
             if ip == MAIN_IP:
-                self._set(pre_overlay={
-                    "overlay": info.get("overlay", ""),
-                    "overlay_uuid": info.get("overlay_uuid", ""),
-                })
+                current_overlay = str(info.get("overlay") or "")
+                current_uuid = str(info.get("overlay_uuid") or "").strip()
+                expected = self.snapshot().get("pre_overlay") or {}
+                expected_uuid = str(expected.get("overlay_uuid") or "").strip()
+                if not current_overlay.startswith("/dev/sd") or not current_uuid:
+                    raise RuntimeError(
+                        f"ROUTER .1: USB Extroot před samotným sysupgrade není aktivní "
+                        f"(overlay={current_overlay or 'N/A'}, UUID={current_uuid or 'N/A'})."
+                    )
+                if expected_uuid and current_uuid.lower() != expected_uuid.lower():
+                    raise RuntimeError(
+                        f"ROUTER .1: UUID Extrootu se od preflightu změnilo ({expected_uuid} -> {current_uuid})."
+                    )
+                self._set(pre_overlay={"overlay": current_overlay, "overlay_uuid": current_uuid})
 
         if stage in {"owut_action_sent", "owut_waiting_reboot", "owut_waiting_online", "owut_postcheck"} or state.get("action_sent"):
             self._log(f"{name} ({ip}): obnovuji rozpracovaný OWUT, upgrade znovu nespouštím.")
@@ -610,23 +902,9 @@ printf 'HOSTNAME=%s\nBOOT_ID=%s\nREVISION=%s\nVERSION=%s\nUPTIME=%s\nOVERLAY=%s\
         self._log(f"{name} ({ip}): OWUT/sysupgrade dokončen a SSH stabilní.")
 
     # -------------------------------------------------------------- reports --
-    def _ihost_temperature(self) -> Optional[int]:
-        for base in (Path("/sys/class/thermal"), Path("/sys/class/hwmon")):
-            try:
-                for path in base.glob("**/temp*"):
-                    if not path.is_file():
-                        continue
-                    raw = path.read_text(errors="ignore").strip()
-                    if not re.fullmatch(r"-?\d+", raw):
-                        continue
-                    value = int(raw)
-                    if abs(value) > 1000:
-                        value //= 1000
-                    if 0 < value < 150:
-                        return value
-            except Exception:
-                continue
-        return None
+    def _ihost_temperature(self) -> Optional[float]:
+        return read_ihost_temperature()
+
 
     def _mail_settings(self) -> Dict[str, Any]:
         return _read_json(SETTINGS_FILE, {})
@@ -656,23 +934,66 @@ printf 'HOSTNAME=%s\nBOOT_ID=%s\nREVISION=%s\nVERSION=%s\nUPTIME=%s\nOVERLAY=%s\
                 f'<td style="padding:7px 8px">{html.escape(temp_text)}</td>'
                 f'<td style="padding:7px 8px;color:#64748b">{html.escape(detail)}</td></tr>'
             )
+
         ihost_temp = self._ihost_temperature()
         ihost_text = f"{ihost_temp} °C" if ihost_temp is not None else "N/A"
-        text_body = (
-            "OpenWRT MESH CONTROLLER PRO v6.0.2\n\n"
-            f"Operace: {title}\nDatum: {_now_text()}\nVýsledek: {result}\n"
-            f"Záloha: {state.get('backup_id') or '—'}\n\n"
-            + "\n".join(rows_text)
-            + f"\n\niHost CPU / SoC: {ihost_text}\n\n{state.get('message','')}"
-        )
+
+        controller_backup = state.get("controller_backup") or {}
+        auto_owut = state.get("kind") == "owut_upgrade" and bool(state.get("automatic"))
+        local_ok = bool(controller_backup.get("local_backup_ok"))
+        nextcloud_ok = bool(controller_backup.get("nextcloud_ok"))
+        backup_filename = str(controller_backup.get("filename") or "—")
+        backup_detail = str(controller_backup.get("detail") or "")
+
+        nl = chr(10)
+        text_lines = [
+            f"OpenWRT MESH CONTROLLER PRO v{VERSION}",
+            "",
+            f"Operace: {title}",
+            f"Datum: {_now_text()}",
+            f"Výsledek: {result}",
+            f"Záloha: {state.get('backup_id') or '—'}",
+            "",
+            *rows_text,
+            "",
+            f"iHost teplota: {ihost_text}",
+        ]
+        if auto_owut:
+            text_lines.extend([
+                "",
+                f"CONTROLLER BACKUP: {'OK' if local_ok else 'CHYBA'}",
+                f"NEXTCLOUD BACKUP: {'OK' if nextcloud_ok else 'CHYBA'}",
+                f"SOUBOR: {backup_filename}",
+            ])
+            if backup_detail:
+                text_lines.append(f"BACKUP DETAIL: {backup_detail}")
+        text_lines.extend(["", str(state.get("message") or "")])
+        text_body = nl.join(text_lines)
+
         banner = "#16a34a" if ok else "#dc2626"
+        controller_backup_html = ""
+        if auto_owut:
+            nc_color = "#16a34a" if nextcloud_ok else "#dc2626"
+            local_color = "#16a34a" if local_ok else "#dc2626"
+            controller_backup_html = (
+                '<tr><td style="padding:0 20px 18px">'
+                '<table width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;border:1px solid #e5e7eb;font-size:12px">'
+                '<tr style="background:#f8fafc"><th colspan="2" style="padding:8px;text-align:left">ZÁLOHA CONTROLLERU · AUTOMATICKÝ OWUT</th></tr>'
+                f'<tr><td style="padding:7px 8px">CONTROLLER BACKUP</td><td style="padding:7px 8px;color:{local_color};font-weight:700">{"OK" if local_ok else "CHYBA"}</td></tr>'
+                f'<tr><td style="padding:7px 8px">NEXTCLOUD BACKUP</td><td style="padding:7px 8px;color:{nc_color};font-weight:700">{"OK" if nextcloud_ok else "CHYBA"}</td></tr>'
+                f'<tr><td style="padding:7px 8px">SOUBOR</td><td style="padding:7px 8px;color:#334155">{html.escape(backup_filename)}</td></tr>'
+                + (f'<tr><td style="padding:7px 8px">DETAIL</td><td style="padding:7px 8px;color:#64748b">{html.escape(backup_detail)}</td></tr>' if backup_detail else '')
+                + '</table></td></tr>'
+            )
+
         html_body = f'''<!doctype html><html><body style="margin:0;background:#f3f6f9;padding:20px 8px">
 <table role="presentation" width="100%"><tr><td align="center"><table role="presentation" width="760" style="width:100%;max-width:760px;background:#fff;border:1px solid #dce3ea;border-radius:14px;overflow:hidden;border-spacing:0;font-family:Arial,sans-serif">
-<tr><td style="background:#071a2d;padding:20px 24px;color:#fff"><b style="font-size:20px">OpenWRT MESH CONTROLLER PRO v6.0.2</b><div style="font-size:12px;color:#cbd5e1;margin-top:4px">{html.escape(title)}</div></td></tr>
+<tr><td style="background:#071a2d;padding:20px 24px;color:#fff"><b style="font-size:20px">OpenWRT MESH CONTROLLER PRO v{VERSION}</b><div style="font-size:12px;color:#cbd5e1;margin-top:4px">{html.escape(title)}</div></td></tr>
 <tr><td style="padding:18px 20px"><div style="background:{banner};color:#fff;border-radius:10px;padding:16px 18px"><b style="font-size:19px">{html.escape(result)}</b><div style="font-size:12px;margin-top:5px">{html.escape(_now_text())}</div></div></td></tr>
 <tr><td style="padding:0 20px 18px"><table width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;border:1px solid #e5e7eb;font-size:12px"><tr style="background:#f8fafc"><th style="padding:7px">UZEL</th><th>IP</th><th>STAV</th><th>CPU</th><th>DETAIL</th></tr>{''.join(html_rows)}</table></td></tr>
-<tr><td style="padding:0 20px 20px;color:#334155;font-size:12px">Záloha: <b>{html.escape(str(state.get('backup_id') or '—'))}</b> &nbsp; · &nbsp; iHost CPU: <b>{html.escape(ihost_text)}</b></td></tr>
-<tr><td style="background:#071a2d;padding:12px 20px;color:#cbd5e1;font-size:10px">Persistent Operation Manager v6.0.0</td></tr>
+{controller_backup_html}
+<tr><td style="padding:0 20px 20px;color:#334155;font-size:12px">Záloha: <b>{html.escape(str(state.get('backup_id') or '—'))}</b> &nbsp; · &nbsp; iHost teplota: <b>{html.escape(ihost_text)}</b></td></tr>
+<tr><td style="background:#071a2d;padding:12px 20px;color:#cbd5e1;font-size:10px">Persistent Operation Manager v{VERSION}</td></tr>
 </table></td></tr></table></body></html>'''
         return subject, text_body, html_body
 
@@ -769,7 +1090,7 @@ printf 'HOSTNAME=%s\nBOOT_ID=%s\nREVISION=%s\nVERSION=%s\nUPTIME=%s\nOVERLAY=%s\
     def _run_reboot(self, resume: bool = False) -> None:
         try:
             start_index = int(self.snapshot().get("current_index") or 0) if resume else 0
-            for index, (ip, name) in enumerate(ROLLING_ORDER):
+            for index, (ip, name) in enumerate(REBOOT_ORDER):
                 row = self._node(ip)
                 if row.get("status") == "done":
                     continue
@@ -789,6 +1110,15 @@ printf 'HOSTNAME=%s\nBOOT_ID=%s\nREVISION=%s\nVERSION=%s\nUPTIME=%s\nOVERLAY=%s\
     def _run_owut(self, resume: bool = False) -> None:
         try:
             state = self.snapshot()
+            # v7.0.1 automatic controller/Nextcloud backup gate
+            if bool(state.get("automatic")) and not resume and not state.get("controller_backup"):
+                from controller_backup_v701 import automatic_backup_result_for_now
+                controller_backup = automatic_backup_result_for_now()
+                self._set(controller_backup=controller_backup)
+                state = self.snapshot()
+                if not bool(controller_backup.get("ok")):
+                    detail = str(controller_backup.get("detail") or "Automatická záloha Controlleru/Nextcloudu pro tento termín není potvrzená.")
+                    raise RuntimeError(f"NEXTCLOUD BACKUP: CHYBA – {detail} Automatický OWUT nebyl spuštěn.")
             checks = state.get("owut_checks") or {}
             if not checks:
                 self._set(stage="owut_check_all", status="running", progress=2, message="OWUT kontrola všech 5 routerů")
@@ -806,8 +1136,20 @@ printf 'HOSTNAME=%s\nBOOT_ID=%s\nREVISION=%s\nVERSION=%s\nUPTIME=%s\nOVERLAY=%s\
                                           before_revision=info.get("revision", ""), after_revision=info.get("revision", ""),
                                           temperature_c=info.get("temperature_c"))
                     self._final_health()
-                    self._finish_success("OWUT kontrola dokončena – nový sysupgrade není dostupný.")
+                    self._log("AUTO/RUČNÍ OWUT: bez změn – žádný sysupgrade, žádný reboot, USB Extroot beze změny.")
+                    self._finish_success("OWUT kontrola dokončena – nový sysupgrade není dostupný; USB Extroot beze změny.")
                     return
+                if MAIN_IP in available:
+                    main_info = self._wait_online_stable(MAIN_IP, 180)
+                    main_overlay = str(main_info.get("overlay") or "")
+                    main_uuid = str(main_info.get("overlay_uuid") or "").strip()
+                    if not main_overlay.startswith("/dev/sd") or not main_uuid:
+                        raise RuntimeError(
+                            f"ROUTER .1: před OWUT není zdravý USB Extroot "
+                            f"(overlay={main_overlay or 'N/A'}, UUID={main_uuid or 'N/A'}). Nic se nebude flashovat."
+                        )
+                    self._set(pre_overlay={"overlay": main_overlay, "overlay_uuid": main_uuid})
+                    self._log(f"ROUTER .1: preflight USB Extroot OK – {main_overlay}, UUID {main_uuid}.")
                 backup_id, backup_dir = self._backup_all()
                 self._set(backup_id=backup_id, backup_dir=backup_dir)
 
@@ -870,7 +1212,7 @@ printf 'HOSTNAME=%s\nBOOT_ID=%s\nREVISION=%s\nVERSION=%s\nUPTIME=%s\nOVERLAY=%s\
                 "source": source,
             })
             self._save_locked()
-        self._log(f"START v6.0.0: {kind} ({'automaticky' if automatic else source}).")
+        self._log(f"START v7.0.2: {kind} ({'automaticky' if automatic else source}).")
         if not self._start_thread(kind, resume=False):
             return False, "Worker se nepodařilo spustit."
         return True, "Operace spuštěna."

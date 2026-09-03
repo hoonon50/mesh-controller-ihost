@@ -1,10 +1,10 @@
 (() => {
   'use strict';
-  if (window.__MESH_V609_LIVE_TOPOLOGY__) return;
-  window.__MESH_V609_LIVE_TOPOLOGY__ = true;
+  if (window.__MESH_V700_LIVE_TOPOLOGY__) return;
+  window.__MESH_V700_LIVE_TOPOLOGY__ = true;
 
   const API = '/api/v503/live-topology';
-  const REFRESH_MS = 5000;
+  const REFRESH_MS = 15000;
   const NODE_POS = {
     '192.168.30.1': [50, 50],
     '192.168.30.2': [12, 14],
@@ -117,7 +117,7 @@
     stage = document.createElement('div');
     stage.className = 'v503-live-stage';
     stage.id = 'v503LiveTopology';
-    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v6.0.9 · čekám…</div>';
+    stage.innerHTML = '<svg class="v503-live-svg" aria-hidden="true"></svg><div class="v503-live-status">LIVE v7.0.0 · čekám…</div>';
     panel.appendChild(stage);
     svg = stage.querySelector('.v503-live-svg');
     status = stage.querySelector('.v503-live-status');
@@ -781,19 +781,85 @@
     hideLegacyRefreshButton();
   }
 
+  // v6.3.3 live LAN1-LAN4 tiles
+  let livePortsObserver = null;
+
+  function livePortClass(port) {
+    if (!port || !port.up) return 'port-down';
+    const speed = Number(port.speed_mbps || 0);
+    if (speed >= 1000) return 'port-gigabit';
+    if (speed > 0) return 'port-fast';
+    return 'port-up';
+  }
+
+  function updateLivePorts(nodesPayload) {
+    const grid = document.getElementById('portsGrid');
+    if (!grid) return;
+    const byIp = new Map((nodesPayload || []).map(node => [String(node.ip || ''), node]));
+
+    grid.querySelectorAll('.router-ports').forEach(section => {
+      const ip = (section.querySelector('.router-ports-head span')?.textContent || '').trim();
+      const node = byIp.get(ip);
+      if (!node || !node.online || node.stale || !Array.isArray(node.ports)) return;
+      const ports = new Map(node.ports.map(port => [String(port.name || '').toLowerCase(), port]));
+
+      section.querySelectorAll('.port-tile').forEach(tile => {
+        const m = (tile.querySelector(':scope > strong')?.textContent || '').trim().match(/^LAN([1-4])$/i);
+        if (!m) return;
+        const port = ports.get(`lan${m[1]}`);
+        if (!port) return;
+
+        tile.classList.remove('port-down', 'port-gigabit', 'port-fast', 'port-up');
+        tile.classList.add(livePortClass(port));
+        tile.dataset.v633LivePort = '1';
+
+        const speed = tile.querySelector(':scope > span');
+        if (speed) {
+          speed.textContent = port.up
+            ? (Number(port.speed_mbps || 0) > 0 ? `${Number(port.speed_mbps)} Mbit/s` : 'RYCHLOST ?')
+            : '—';
+        }
+
+        const status = tile.querySelector(':scope > b');
+        if (status) {
+          const liveStatus = port.up ? 'UP' : 'DOWN';
+          // v6.2.0 si původní stav ukládá do datasetu. Aktualizujeme i jej,
+          // aby jeho 5s decorate() nevracel zastaralé UP/DOWN.
+          status.dataset.v620Original = liveStatus;
+          if (!tile.classList.contains('v620-port-blocked')) status.textContent = liveStatus;
+        }
+      });
+    });
+  }
+
+  function ensureLivePortsObserver() {
+    const grid = document.getElementById('portsGrid');
+    if (!grid || livePortsObserver) return;
+    // Starý /api/status renderer může po 30 s vyměnit celé router-ports sekce.
+    // Reaplikujeme poslední 5s live vzorek hned po takové výměně.
+    livePortsObserver = new MutationObserver(() => {
+      window.setTimeout(() => {
+        if (lastPayload) updateLivePorts(lastPayload.nodes || []);
+      }, 0);
+    });
+    livePortsObserver.observe(grid, {childList: true});
+  }
+
   function render(payload) {
     if (!mount()) return;
     lastPayload = payload;
     for (const node of (payload.nodes || [])) updateNode(node);
+    ensureLivePortsObserver();
+    updateLivePorts(payload.nodes || []);
     drawLinks(payload.links || []);
     updateMetrics(payload.summary || {}, payload.clock || '', payload.data_dir || '/data');
     updateIhost(payload.ihost || {});
     if (status) {
       status.className = `v503-live-status ${payload.ok ? 'ok' : 'error'}`;
       status.textContent = payload.ok
-        ? `LIVE v6.0.9 · ${payload.clock || ''} · #${payload.sequence || 0}`
-        : `LIVE v6.0.9 · čekám na routery`;
-      status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 5} s`;
+        ? `LIVE v7.0.0 · ${payload.clock || ''} · #${payload.sequence || 0}`
+        : `LIVE v7.0.0 · čekám na routery`;
+      status.title = `Backend vzorek ${payload.sample_duration_ms || 0} ms · polling ${payload.poll_seconds || 15} s`;
     }
   }
 
@@ -807,7 +873,7 @@
     } catch (err) {
       if (status) {
         status.className = 'v503-live-status error';
-        status.textContent = 'LIVE v6.0.9 · API nedostupné';
+        status.textContent = 'LIVE v7.0.0 · API nedostupné';
         status.title = String(err);
       }
     } finally {
